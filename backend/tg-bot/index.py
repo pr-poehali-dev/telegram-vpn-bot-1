@@ -285,6 +285,7 @@ def send_main_menu(chat_id, user: dict, user_id: int = None):
         if keys:
             rows.append([{"text": "🔑 Показать мой ключ", "callback_data": f"key_{keys[0]['id']}"}])
     rows.append([{"text": "➕ Создать новый ключ", "callback_data": "create_key"}])
+    rows.append([{"text": "🛟 Поддержка", "callback_data": "support"}])
     keyboard = {"inline_keyboard": rows}
     send_message(
         chat_id,
@@ -397,6 +398,23 @@ def handle_update(update: dict):
                 keyboard = {"inline_keyboard": [[{"text": "◀️ Отмена", "callback_data": "main_menu"}]]}
                 edit_message(chat_id, message_id, "✏️ Введи название для нового ключа (например: *Телефон*, *Ноутбук*):", reply_markup=keyboard)
 
+        elif data == "support":
+            keyboard = {
+                "inline_keyboard": [
+                    [{"text": "👤 Написать @btb75", "url": "https://t.me/btb75"}],
+                    [{"text": "👤 Написать @makarevichas", "url": "https://t.me/makarevichas"}],
+                    [{"text": "◀️ Назад", "callback_data": "main_menu"}],
+                ]
+            }
+            edit_message(
+                chat_id, message_id,
+                "🛟 *Поддержка RossoVPN*\n\n"
+                "По любым вопросам — подключение, оплата, возврат или что-то пошло не так — наши специалисты всегда на связи.\n\n"
+                "⏱ Среднее время ответа: *до 2 часов*\n\n"
+                "Выбери удобного специалиста 👇",
+                reply_markup=keyboard
+            )
+
         elif data.startswith("replace_key_"):
             old_id = int(data.split("_", 2)[2])
             key_info = delete_key_by_id(old_id, user_id)
@@ -501,13 +519,19 @@ def handle_update(update: dict):
         return
 
     if text == "/support":
+        keyboard = {
+            "inline_keyboard": [
+                [{"text": "👤 Написать @btb75", "url": "https://t.me/btb75"}],
+                [{"text": "👤 Написать @makarevichas", "url": "https://t.me/makarevichas"}],
+            ]
+        }
         send_message(
             chat_id,
-            "🆘 *Поддержка RossoVPN*\n\n"
-            "Мы на связи и поможем с любым вопросом:\n\n"
-            "👤 @btb75\n"
-            "👤 @makarevichas\n\n"
-            "Время ответа: как правило в течение нескольких часов."
+            "🛟 *Поддержка RossoVPN*\n\n"
+            "По любым вопросам — подключение, оплата, возврат или что-то пошло не так — наши специалисты всегда на связи.\n\n"
+            "⏱ Среднее время ответа: *до 2 часов*\n\n"
+            "Выбери удобного специалиста 👇",
+            reply_markup=keyboard
         )
         return
 
