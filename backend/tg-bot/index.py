@@ -152,10 +152,12 @@ def create_vless_client(name: str):
 
 
 def handle_update(update: dict):
+    print(f"[handle_update] keys={list(update.keys())}")
     message = update.get("message", {})
     callback = update.get("callback_query", {})
 
     if callback:
+        print(f"[callback] raw={json.dumps(callback)[:200]}")
         chat_id = callback["message"]["chat"]["id"]
         data = callback.get("data", "")
         user_id = callback["from"]["id"]
