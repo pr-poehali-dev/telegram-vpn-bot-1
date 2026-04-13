@@ -1,6 +1,6 @@
 """
-Telegram бот для выдачи VPN ключей через панель 3x-ui.
-Сценарий: пользователь вводит имя → нажимает "Получить ключ" → бот создаёт клиента в 3x-ui и отправляет VLESS ссылку.
+Telegram VPN бот с личным кабинетом.
+Сценарий: /start → регистрация имени (один раз) → главное меню (профиль, ключи, создать, удалить).
 """
 
 import os
@@ -10,7 +10,6 @@ import requests
 import psycopg2
 
 BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
-# Принудительно http — панель 3x-ui без SSL
 _raw_url = os.environ['XUI_URL'].rstrip('/').replace('https://', 'http://')
 XUI_URL = _raw_url
 XUI_USERNAME = os.environ['XUI_USERNAME']
@@ -23,57 +22,128 @@ print(f"[init] XUI_URL={XUI_URL}")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
+# ── БД ──────────────────────────────────────────────────────────────────────
+
 def get_db():
     return psycopg2.connect(os.environ['DATABASE_URL'])
 
 
-def get_state(user_id: int) -> dict:
+def get_user(user_id: int) -> dict:
     conn = get_db()
     try:
         cur = conn.cursor()
-        cur.execute(f"SELECT step, name FROM {DB_SCHEMA}.user_states WHERE user_id = {user_id}")
+        cur.execute(
+            f"SELECT step, name, tg_username, tg_first_name FROM {DB_SCHEMA}.user_states WHERE user_id = {user_id}"
+        )
         row = cur.fetchone()
         if row:
-            return {"step": row[0], "name": row[1]}
+            return {"step": row[0], "name": row[1], "tg_username": row[2], "tg_first_name": row[3]}
         return {}
     finally:
         conn.close()
 
 
-def set_state(user_id: int, step: str, name: str = ""):
+def upsert_user(user_id: int, step: str, name: str = "", tg_username: str = "", tg_first_name: str = ""):
     conn = get_db()
     try:
         cur = conn.cursor()
+        name_s = name.replace("'", "''")
+        tg_u = tg_username.replace("'", "''")
+        tg_f = tg_first_name.replace("'", "''")
         cur.execute(f"""
-            INSERT INTO {DB_SCHEMA}.user_states (user_id, step, name, updated_at)
-            VALUES ({user_id}, '{step}', '{name.replace("'", "''")}', NOW())
-            ON CONFLICT (user_id) DO UPDATE SET step = EXCLUDED.step, name = EXCLUDED.name, updated_at = NOW()
+            INSERT INTO {DB_SCHEMA}.user_states (user_id, step, name, tg_username, tg_first_name, updated_at)
+            VALUES ({user_id}, '{step}', '{name_s}', '{tg_u}', '{tg_f}', NOW())
+            ON CONFLICT (user_id) DO UPDATE
+            SET step = EXCLUDED.step,
+                name = CASE WHEN EXCLUDED.name = '' THEN {DB_SCHEMA}.user_states.name ELSE EXCLUDED.name END,
+                tg_username = EXCLUDED.tg_username,
+                tg_first_name = EXCLUDED.tg_first_name,
+                updated_at = NOW()
         """)
         conn.commit()
     finally:
         conn.close()
 
 
-def clear_state(user_id: int):
+def set_step(user_id: int, step: str):
     conn = get_db()
     try:
         cur = conn.cursor()
-        cur.execute(f"DELETE FROM {DB_SCHEMA}.user_states WHERE user_id = {user_id}")
+        cur.execute(
+            f"UPDATE {DB_SCHEMA}.user_states SET step = '{step}', updated_at = NOW() WHERE user_id = {user_id}"
+        )
         conn.commit()
     finally:
         conn.close()
 
 
+def save_key(user_id: int, client_id: str, name: str, vless_link: str):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        name_s = name.replace("'", "''")
+        link_s = vless_link.replace("'", "''")
+        cid_s = client_id.replace("'", "''")
+        cur.execute(f"""
+            INSERT INTO {DB_SCHEMA}.user_keys (user_id, client_id, name, vless_link, created_at)
+            VALUES ({user_id}, '{cid_s}', '{name_s}', '{link_s}', NOW())
+        """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_keys(user_id: int) -> list:
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT id, client_id, name, vless_link, created_at FROM {DB_SCHEMA}.user_keys WHERE user_id = {user_id} ORDER BY created_at DESC"
+        )
+        rows = cur.fetchall()
+        return [{"id": r[0], "client_id": r[1], "name": r[2], "vless_link": r[3], "created_at": r[4]} for r in rows]
+    finally:
+        conn.close()
+
+
+def delete_key_by_id(key_id: int, user_id: int) -> dict | None:
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT client_id, name FROM {DB_SCHEMA}.user_keys WHERE id = {key_id} AND user_id = {user_id}"
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cur.execute(f"DELETE FROM {DB_SCHEMA}.user_keys WHERE id = {key_id}")
+        conn.commit()
+        return {"client_id": row[0], "name": row[1]}
+    finally:
+        conn.close()
+
+
+# ── Telegram ─────────────────────────────────────────────────────────────────
+
 def send_message(chat_id, text, reply_markup=None, parse_mode="Markdown"):
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": parse_mode
-    }
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     requests.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=10)
 
+
+def edit_message(chat_id, message_id, text, reply_markup=None, parse_mode="Markdown"):
+    payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": parse_mode}
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
+    requests.post(f"{TELEGRAM_API}/editMessageText", json=payload, timeout=10)
+
+
+def answer_callback(callback_id):
+    requests.post(f"{TELEGRAM_API}/answerCallbackQuery", json={"callback_query_id": callback_id}, timeout=5)
+
+
+# ── 3x-ui ─────────────────────────────────────────────────────────────────────
 
 def xui_login():
     session = requests.Session()
@@ -88,16 +158,17 @@ def xui_login():
     return None
 
 
-def create_vless_client(name: str):
+def xui_create_client(label: str) -> tuple:
+    """Создаёт клиента в панели, возвращает (client_id, vless_link) или (None, error)."""
     session = xui_login()
     if not session:
-        return None, "Ошибка авторизации в панели 3x-ui"
+        return None, None, "Ошибка авторизации в панели 3x-ui"
 
     client_id = str(uuid.uuid4())
     client = {
         "id": client_id,
         "flow": "xtls-rprx-vision",
-        "email": name,
+        "email": label,
         "limitIp": 0,
         "totalGB": 0,
         "expiryTime": 0,
@@ -107,34 +178,28 @@ def create_vless_client(name: str):
         "reset": 0
     }
 
-    payload = {"id": INBOUND_ID, "settings": json.dumps({"clients": [client]})}
-
     resp = session.post(
         f"{XUI_URL}/panel/api/inbounds/addClient",
-        json=payload,
+        json={"id": INBOUND_ID, "settings": json.dumps({"clients": [client]})},
         allow_redirects=True,
         timeout=10
     )
     print(f"[addClient] status={resp.status_code} body={resp.text[:300]}")
 
     if resp.status_code != 200:
-        return None, f"Ошибка API панели: {resp.status_code}"
+        return None, None, f"Ошибка API панели: {resp.status_code}"
 
     data = resp.json()
     if not data.get("success"):
-        msg = data.get("msg", "Неизвестная ошибка")
-        return None, f"Панель вернула ошибку: {msg}"
+        return None, None, f"Панель вернула ошибку: {data.get('msg', '?')}"
 
-    # Получаем данные inbound
     inbound_resp = session.get(
         f"{XUI_URL}/panel/api/inbounds/get/{INBOUND_ID}",
         allow_redirects=True,
         timeout=10
     )
-    print(f"[getInbound] status={inbound_resp.status_code} body={inbound_resp.text[:300]}")
-
     if inbound_resp.status_code != 200 or not inbound_resp.json().get("success"):
-        return None, "Не удалось получить данные inbound"
+        return None, None, "Не удалось получить данные inbound"
 
     inbound = inbound_resp.json().get("obj", {})
     stream_settings = json.loads(inbound.get("streamSettings", "{}"))
@@ -152,93 +217,239 @@ def create_vless_client(name: str):
         f"vless://{client_id}@{host}:{port}"
         f"?type=tcp&security=reality&pbk={public_key}"
         f"&fp=chrome&sni={sni}&sid={short_id}&spx=%2F&flow=xtls-rprx-vision"
-        f"#{name}"
+        f"#{label}"
     )
 
-    return vless_link, None
+    return client_id, vless_link, None
 
+
+def xui_delete_client(client_id: str) -> str | None:
+    """Удаляет клиента из панели. Возвращает None при успехе или строку с ошибкой."""
+    session = xui_login()
+    if not session:
+        return "Ошибка авторизации в панели"
+
+    resp = session.post(
+        f"{XUI_URL}/panel/api/inbounds/{INBOUND_ID}/delClient/{client_id}",
+        allow_redirects=True,
+        timeout=10
+    )
+    print(f"[delClient] status={resp.status_code} body={resp.text[:200]}")
+
+    if resp.status_code != 200:
+        return f"Ошибка API: {resp.status_code}"
+
+    data = resp.json()
+    if not data.get("success"):
+        return data.get("msg", "Ошибка удаления")
+
+    return None
+
+
+# ── Меню ─────────────────────────────────────────────────────────────────────
+
+def send_main_menu(chat_id, user: dict):
+    name = user.get("name", "—")
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "👤 Мой профиль", "callback_data": "profile"}],
+            [{"text": "🔑 Мои ключи", "callback_data": "my_keys"}],
+            [{"text": "➕ Создать новый ключ", "callback_data": "create_key"}],
+        ]
+    }
+    send_message(
+        chat_id,
+        f"👋 Привет, *{name}*! Это твой личный кабинет VPN.\n\nВыбери действие:",
+        reply_markup=keyboard
+    )
+
+
+def send_keys_list(chat_id, user_id: int, edit=False, message_id=None):
+    keys = get_keys(user_id)
+    if not keys:
+        text = "У тебя пока нет ключей.\nНажми *➕ Создать новый ключ* в главном меню."
+        keyboard = {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]}
+        if edit and message_id:
+            edit_message(chat_id, message_id, text, reply_markup=keyboard)
+        else:
+            send_message(chat_id, text, reply_markup=keyboard)
+        return
+
+    rows = []
+    for k in keys:
+        date = k["created_at"].strftime("%d.%m.%Y") if k["created_at"] else "—"
+        rows.append([{"text": f"🔑 {k['name']} • {date}", "callback_data": f"key_{k['id']}"}])
+    rows.append([{"text": "◀️ Назад", "callback_data": "main_menu"}])
+
+    text = f"🔑 *Твои ключи* ({len(keys)} шт.):\n\nНажми на ключ чтобы посмотреть или удалить:"
+    keyboard = {"inline_keyboard": rows}
+
+    if edit and message_id:
+        edit_message(chat_id, message_id, text, reply_markup=keyboard)
+    else:
+        send_message(chat_id, text, reply_markup=keyboard)
+
+
+def send_key_detail(chat_id, message_id, key: dict):
+    date = key["created_at"].strftime("%d.%m.%Y %H:%M") if key["created_at"] else "—"
+    text = (
+        f"🔑 *Ключ: {key['name']}*\n\n"
+        f"📅 Создан: {date}\n"
+        f"⏳ Действует: *бессрочно*\n\n"
+        f"`{key['vless_link']}`"
+    )
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "🗑 Удалить этот ключ", "callback_data": f"del_{key['id']}"}],
+            [{"text": "◀️ К списку ключей", "callback_data": "my_keys"}],
+        ]
+    }
+    edit_message(chat_id, message_id, text, reply_markup=keyboard)
+
+
+# ── Обработчик ───────────────────────────────────────────────────────────────
 
 def handle_update(update: dict):
     print(f"[handle_update] keys={list(update.keys())}")
-    message = update.get("message", {})
-    callback = update.get("callback_query", {})
 
+    # ── Callback ──
+    callback = update.get("callback_query", {})
     if callback:
-        print(f"[callback] raw={json.dumps(callback)[:200]}")
         chat_id = callback["message"]["chat"]["id"]
+        message_id = callback["message"]["message_id"]
         data = callback.get("data", "")
         user_id = callback["from"]["id"]
+        answer_callback(callback["id"])
 
-        requests.post(f"{TELEGRAM_API}/answerCallbackQuery",
-                      json={"callback_query_id": callback["id"]}, timeout=5)
+        user = get_user(user_id)
 
-        if data == "get_key":
-            state = get_state(user_id)
-            name = state.get("name", "")
-            print(f"[get_key] user_id={user_id} state={state}")
+        if data == "main_menu":
+            set_step(user_id, "menu")
+            send_main_menu(chat_id, user)
 
-            if not name:
-                send_message(chat_id, "Сначала укажите ваше имя командой /start")
-                return
-
-            send_message(chat_id, "⏳ Создаю ключ доступа, подождите...")
-
-            vless_link, error = create_vless_client(name)
-            if error:
-                send_message(chat_id, f"❌ Не удалось создать ключ: {error}")
-                return
-
+        elif data == "profile":
+            name = user.get("name", "—")
+            tg_u = user.get("tg_username", "")
+            keys = get_keys(user_id)
+            tg_line = f"@{tg_u}" if tg_u else "не указан"
             text = (
-                f"✅ *Ключ доступа выдан*\n\n"
-                f"👤 Пользователь: `{name}`\n\n"
-                f"🔑 Ваш VLESS ключ:\n\n"
-                f"`{vless_link}`\n\n"
-                f"Скопируйте ключ и вставьте его в приложение для подключения."
+                f"👤 *Профиль*\n\n"
+                f"Имя: *{name}*\n"
+                f"Telegram: {tg_line}\n"
+                f"Ключей: *{len(keys)}*\n"
+                f"Тариф: *Бесплатный (∞)*"
             )
-            send_message(chat_id, text)
-            clear_state(user_id)
+            keyboard = {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]}
+            edit_message(chat_id, message_id, text, reply_markup=keyboard)
+
+        elif data == "my_keys":
+            send_keys_list(chat_id, user_id, edit=True, message_id=message_id)
+
+        elif data == "create_key":
+            set_step(user_id, "creating_key")
+            keyboard = {"inline_keyboard": [[{"text": "◀️ Отмена", "callback_data": "main_menu"}]]}
+            edit_message(chat_id, message_id, "✏️ Введи название для нового ключа (например: *Телефон*, *Ноутбук*):", reply_markup=keyboard)
+
+        elif data.startswith("key_"):
+            key_id = int(data.split("_", 1)[1])
+            keys = get_keys(user_id)
+            key = next((k for k in keys if k["id"] == key_id), None)
+            if key:
+                send_key_detail(chat_id, message_id, key)
+            else:
+                edit_message(chat_id, message_id, "Ключ не найден.")
+
+        elif data.startswith("del_"):
+            key_id = int(data.split("_", 1)[1])
+            keyboard = {
+                "inline_keyboard": [
+                    [{"text": "✅ Да, удалить", "callback_data": f"confirm_del_{key_id}"}],
+                    [{"text": "◀️ Отмена", "callback_data": f"key_{key_id}"}],
+                ]
+            }
+            edit_message(chat_id, message_id, "⚠️ Ты уверен? Ключ будет удалён и перестанет работать.", reply_markup=keyboard)
+
+        elif data.startswith("confirm_del_"):
+            key_id = int(data.split("_", 2)[2])
+            key_info = delete_key_by_id(key_id, user_id)
+            if not key_info:
+                edit_message(chat_id, message_id, "Ключ не найден или уже удалён.")
+                return
+
+            err = xui_delete_client(key_info["client_id"])
+            if err:
+                print(f"[del_client] xui error: {err}")
+
+            set_step(user_id, "menu")
+            send_keys_list(chat_id, user_id, edit=True, message_id=message_id)
+
         return
 
+    # ── Message ──
+    message = update.get("message", {})
     if not message:
         return
 
     chat_id = message["chat"]["id"]
     user_id = message["from"]["id"]
     text = message.get("text", "").strip()
+    tg_username = message["from"].get("username", "")
+    tg_first_name = message["from"].get("first_name", "")
+
+    user = get_user(user_id)
 
     if text == "/start":
-        set_state(user_id, "ask_name", "")
-        send_message(
-            chat_id,
-            "👋 *Добро пожаловать в систему выдачи ключей*\n\n"
-            "Пожалуйста, введите ваше имя для идентификации:"
-        )
+        if user.get("name"):
+            upsert_user(user_id, "menu", user["name"], tg_username, tg_first_name)
+            send_main_menu(chat_id, user)
+        else:
+            upsert_user(user_id, "ask_name", "", tg_username, tg_first_name)
+            send_message(chat_id, "👋 *Добро пожаловать!*\n\nЭто VPN-бот. Введи своё имя для регистрации:")
         return
 
-    state = get_state(user_id)
-    print(f"[message] user_id={user_id} step={state.get('step')} text={text}")
+    step = user.get("step", "")
+    print(f"[message] user_id={user_id} step={step} text={text[:50]}")
 
-    if state.get("step") == "ask_name":
-        name = text
-        set_state(user_id, "confirm", name)
+    if step == "ask_name":
+        name = text[:50]
+        upsert_user(user_id, "menu", name, tg_username, tg_first_name)
+        send_message(chat_id, f"✅ Отлично, *{name}*! Регистрация завершена.")
+        send_main_menu(chat_id, {**user, "name": name})
+        return
 
+    if step == "creating_key":
+        label = text[:50]
+        upsert_user(user_id, "menu", "", tg_username, tg_first_name)
+        send_message(chat_id, "⏳ Создаю ключ, подождите...")
+
+        user_name = get_user(user_id).get("name", "user")
+        full_label = f"{user_name}_{label}_{user_id}"
+
+        client_id, vless_link, error = xui_create_client(full_label)
+        if error:
+            send_message(chat_id, f"❌ Не удалось создать ключ: {error}")
+            return
+
+        save_key(user_id, client_id, label, vless_link)
+        set_step(user_id, "menu")
+
+        text_out = (
+            f"✅ *Ключ «{label}» создан!*\n\n"
+            f"⏳ Действует: *бессрочно*\n\n"
+            f"🔑 Твой VLESS ключ:\n\n"
+            f"`{vless_link}`\n\n"
+            f"Скопируй и вставь в приложение для подключения."
+        )
         keyboard = {
-            "inline_keyboard": [[
-                {"text": "🔑 Получить ключ", "callback_data": "get_key"}
-            ]]
+            "inline_keyboard": [
+                [{"text": "🔑 Мои ключи", "callback_data": "my_keys"}],
+                [{"text": "🏠 Главное меню", "callback_data": "main_menu"}],
+            ]
         }
-        send_message(
-            chat_id,
-            f"✅ Имя принято: *{name}*\n\n"
-            f"Нажмите кнопку ниже, чтобы получить ключ доступа:",
-            reply_markup=keyboard
-        )
+        send_message(chat_id, text_out, reply_markup=keyboard)
         return
 
-    send_message(
-        chat_id,
-        "Введите /start чтобы начать получение ключа."
-    )
+    send_main_menu(chat_id, user)
 
 
 def handler(event, context) -> dict:
@@ -268,9 +479,13 @@ def handler(event, context) -> dict:
             body = json.loads(raw_body) if raw_body else {}
         else:
             body = raw_body or {}
+
         handle_update(body)
     except Exception as e:
-        print(f"[handler ERROR] {e}")
-        return {"statusCode": 200, "headers": headers, "body": {"ok": True, "error": str(e)}}
+        print(f"[handler] error: {e}")
 
-    return {"statusCode": 200, "headers": headers, "body": {"ok": True}}
+    return {
+        "statusCode": 200,
+        "headers": headers,
+        "body": json.dumps({"ok": True})
+    }
