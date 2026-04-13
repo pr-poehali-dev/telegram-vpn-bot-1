@@ -107,12 +107,14 @@ def create_vless_client(name: str):
         "reset": 0
     }
 
-    resp = session.post(
-        f"{XUI_URL}/xui/API/inbounds/addClient",
-        json={"id": INBOUND_ID, "settings": json.dumps({"clients": [client]})},
-        timeout=10
-    )
-    print(f"[addClient] status={resp.status_code} body={resp.text[:300]}")
+    payload = {"id": INBOUND_ID, "settings": json.dumps({"clients": [client]})}
+
+    # Пробуем оба возможных пути API в 3x-ui 2.8+
+    for path in ["/xui/API/inbounds/addClient", "/xui/inbound/addClient"]:
+        resp = session.post(f"{XUI_URL}{path}", json=payload, timeout=10)
+        print(f"[addClient] path={path} status={resp.status_code} body={resp.text[:300]}")
+        if resp.status_code == 200:
+            break
 
     if resp.status_code != 200:
         return None, f"Ошибка API панели: {resp.status_code}"
@@ -122,9 +124,13 @@ def create_vless_client(name: str):
         msg = data.get("msg", "Неизвестная ошибка")
         return None, f"Панель вернула ошибку: {msg}"
 
-    # Получаем данные inbound для формирования ссылки
-    inbound_resp = session.get(f"{XUI_URL}/xui/API/inbounds/get/{INBOUND_ID}", timeout=10)
-    print(f"[getInbound] status={inbound_resp.status_code} body={inbound_resp.text[:300]}")
+    # Получаем данные inbound — пробуем оба пути
+    inbound_resp = None
+    for path in ["/xui/API/inbounds/get", "/xui/inbound/get"]:
+        inbound_resp = session.get(f"{XUI_URL}{path}/{INBOUND_ID}", timeout=10)
+        print(f"[getInbound] path={path} status={inbound_resp.status_code} body={inbound_resp.text[:300]}")
+        if inbound_resp.status_code == 200:
+            break
 
     if inbound_resp.status_code != 200 or not inbound_resp.json().get("success"):
         return None, "Не удалось получить данные inbound"
