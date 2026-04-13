@@ -248,15 +248,17 @@ def xui_delete_client(client_id: str) -> str | None:
 
 # ── Меню ─────────────────────────────────────────────────────────────────────
 
-def send_main_menu(chat_id, user: dict):
+def send_main_menu(chat_id, user: dict, user_id: int = None):
     name = user.get("name", "—")
-    keyboard = {
-        "inline_keyboard": [
-            [{"text": "👤 Мой профиль", "callback_data": "profile"}],
-            [{"text": "🔑 Мои ключи", "callback_data": "my_keys"}],
-            [{"text": "➕ Создать новый ключ", "callback_data": "create_key"}],
-        ]
-    }
+    rows = [
+        [{"text": "👤 Мой профиль", "callback_data": "profile"}],
+    ]
+    if user_id:
+        keys = get_keys(user_id)
+        if keys:
+            rows.append([{"text": "🔑 Показать мой ключ", "callback_data": f"key_{keys[0]['id']}"}])
+    rows.append([{"text": "➕ Создать новый ключ", "callback_data": "create_key"}])
+    keyboard = {"inline_keyboard": rows}
     send_message(
         chat_id,
         f"👋 Привет, *{name}*! Это твой личный кабинет VPN.\n\nВыбери действие:",
@@ -325,7 +327,7 @@ def handle_update(update: dict):
 
         if data == "main_menu":
             set_step(user_id, "menu")
-            send_main_menu(chat_id, user)
+            send_main_menu(chat_id, user, user_id)
 
         elif data == "profile":
             name = user.get("name", "—")
@@ -428,7 +430,7 @@ def handle_update(update: dict):
     if text == "/start":
         if user.get("name"):
             upsert_user(user_id, "menu", user["name"], tg_username, tg_first_name)
-            send_main_menu(chat_id, user)
+            send_main_menu(chat_id, user, user_id)
         else:
             upsert_user(user_id, "ask_name", "", tg_username, tg_first_name)
             send_message(chat_id, "👋 *Добро пожаловать!*\n\nЭто VPN-бот. Введи своё имя для регистрации:")
@@ -441,7 +443,7 @@ def handle_update(update: dict):
         name = text[:50]
         upsert_user(user_id, "menu", name, tg_username, tg_first_name)
         send_message(chat_id, f"✅ Отлично, *{name}*! Регистрация завершена.")
-        send_main_menu(chat_id, {**user, "name": name})
+        send_main_menu(chat_id, {**user, "name": name}, user_id)
         return
 
     if step == "creating_key":
@@ -476,7 +478,7 @@ def handle_update(update: dict):
         send_message(chat_id, text_out, reply_markup=keyboard)
         return
 
-    send_main_menu(chat_id, user)
+    send_main_menu(chat_id, user, user_id)
 
 
 def handler(event, context) -> dict:
