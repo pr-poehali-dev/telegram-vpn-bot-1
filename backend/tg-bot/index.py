@@ -108,7 +108,7 @@ def create_vless_client(name: str):
     }
 
     resp = session.post(
-        f"{XUI_URL}/xui/inbound/addClient",
+        f"{XUI_URL}/xui/API/inbounds/addClient",
         json={"id": INBOUND_ID, "settings": json.dumps({"clients": [client]})},
         timeout=10
     )
@@ -123,7 +123,7 @@ def create_vless_client(name: str):
         return None, f"Панель вернула ошибку: {msg}"
 
     # Получаем данные inbound для формирования ссылки
-    inbound_resp = session.get(f"{XUI_URL}/xui/inbound/get/{INBOUND_ID}", timeout=10)
+    inbound_resp = session.get(f"{XUI_URL}/xui/API/inbounds/get/{INBOUND_ID}", timeout=10)
     print(f"[getInbound] status={inbound_resp.status_code} body={inbound_resp.text[:300]}")
 
     if inbound_resp.status_code != 200 or not inbound_resp.json().get("success"):
