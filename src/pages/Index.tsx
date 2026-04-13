@@ -26,7 +26,7 @@ export default function Index() {
           </div>
           <div>
             <div className="text-sm font-medium text-foreground">Telegram бот</div>
-            <div className="text-xs text-muted-foreground font-mono">@RossoVPN_bot</div>
+            <div className="text-xs text-muted-foreground font-mono">@my_vpn_test_bot</div>
           </div>
           <div className="ml-auto flex items-center gap-1.5 text-xs text-green-400 font-mono">
             <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span>
@@ -61,7 +61,7 @@ export default function Index() {
         {/* CTA */}
         <div className="border-t border-border px-6 py-4">
           <a
-            href="https://t.me/RossoVPN_bot"
+            href="https://t.me/my_vpn_test_bot"
             target="_blank"
             rel="noopener noreferrer"
             className="w-full flex items-center justify-center gap-2 bg-primary text-primary-foreground text-sm font-medium py-2.5 px-4 rounded-sm hover:bg-primary/90 transition-colors"
