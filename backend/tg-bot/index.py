@@ -22,6 +22,33 @@ print(f"[init] XUI_URL={XUI_URL}")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
+def setup_bot():
+    """Устанавливает имя, описание и команды бота при первом запуске."""
+    requests.post(f"{TELEGRAM_API}/setMyName", json={"name": "RossoVPN"}, timeout=10)
+    requests.post(f"{TELEGRAM_API}/setMyDescription", json={
+        "description": (
+            "🔒 RossoVPN — быстрый и надёжный VPN-сервис.\n\n"
+            "✅ Безлимитный трафик\n"
+            "✅ Высокая скорость\n"
+            "✅ 199 ₽/месяц\n\n"
+            "Поддержка: @btb75, @makarevichas"
+        )
+    }, timeout=10)
+    requests.post(f"{TELEGRAM_API}/setMyShortDescription", json={
+        "short_description": "Быстрый VPN — 199 ₽/месяц. Поддержка: @btb75"
+    }, timeout=10)
+    requests.post(f"{TELEGRAM_API}/setMyCommands", json={"commands": [
+        {"command": "start",   "description": "Личный кабинет"},
+        {"command": "offer",   "description": "Публичная оферта"},
+        {"command": "refund",  "description": "Условия возврата"},
+        {"command": "support", "description": "Связаться с поддержкой"},
+    ]}, timeout=10)
+    print("[setup_bot] done")
+
+
+setup_bot()
+
+
 # ── БД ──────────────────────────────────────────────────────────────────────
 
 def get_db():
@@ -433,7 +460,55 @@ def handle_update(update: dict):
             send_main_menu(chat_id, user, user_id)
         else:
             upsert_user(user_id, "ask_name", "", tg_username, tg_first_name)
-            send_message(chat_id, "👋 *Добро пожаловать!*\n\nЭто VPN-бот. Введи своё имя для регистрации:")
+            send_message(
+                chat_id,
+                "👋 *Добро пожаловать в RossoVPN!*\n\n"
+                "Быстрый и надёжный VPN — *199 ₽/месяц*.\n\n"
+                "Введи своё имя для регистрации:"
+            )
+        return
+
+    if text == "/offer":
+        send_message(
+            chat_id,
+            "📄 *Публичная оферта RossoVPN*\n\n"
+            "Настоящая оферта является официальным предложением на оказание услуг доступа к сервису RossoVPN.\n\n"
+            "*1. Услуга*\n"
+            "Предоставление доступа к VPN-сервису RossoVPN на условиях ежемесячной подписки.\n\n"
+            "*2. Стоимость*\n"
+            "199 ₽ в месяц. Оплата списывается автоматически в дату продления.\n\n"
+            "*3. Активация*\n"
+            "Доступ предоставляется немедленно после оплаты.\n\n"
+            "*4. Возврат*\n"
+            "Возврат средств возможен в течение 7 дней с момента оплаты по запросу в поддержку.\n\n"
+            "*5. Поддержка*\n"
+            "По всем вопросам: @btb75 или @makarevichas\n\n"
+            "*6. Акцепт*\n"
+            "Оплата подписки означает полное согласие с условиями настоящей оферты."
+        )
+        return
+
+    if text == "/refund":
+        send_message(
+            chat_id,
+            "💸 *Условия возврата*\n\n"
+            "Мы принимаем заявки на возврат в течение *7 дней* с момента оплаты.\n\n"
+            "Для оформления возврата обратитесь в поддержку:\n"
+            "👤 @btb75\n"
+            "👤 @makarevichas\n\n"
+            "Укажи свой Telegram и дату оплаты — вернём деньги в течение 3 рабочих дней."
+        )
+        return
+
+    if text == "/support":
+        send_message(
+            chat_id,
+            "🆘 *Поддержка RossoVPN*\n\n"
+            "Мы на связи и поможем с любым вопросом:\n\n"
+            "👤 @btb75\n"
+            "👤 @makarevichas\n\n"
+            "Время ответа: как правило в течение нескольких часов."
+        )
         return
 
     step = user.get("step", "")
