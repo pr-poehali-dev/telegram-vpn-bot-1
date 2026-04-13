@@ -284,6 +284,7 @@ def send_main_menu(chat_id, user: dict, user_id: int = None):
         keys = get_keys(user_id)
         if keys:
             rows.append([{"text": "🔑 Показать мой ключ", "callback_data": f"key_{keys[0]['id']}"}])
+    rows.append([{"text": "💳 Оформить подписку — 199 ₽/мес", "callback_data": "subscribe"}])
     rows.append([{"text": "➕ Создать новый ключ", "callback_data": "create_key"}])
     rows.append([{"text": "🛟 Поддержка", "callback_data": "support"}])
     keyboard = {"inline_keyboard": rows}
@@ -397,6 +398,20 @@ def handle_update(update: dict):
                 set_step(user_id, "creating_key")
                 keyboard = {"inline_keyboard": [[{"text": "◀️ Отмена", "callback_data": "main_menu"}]]}
                 edit_message(chat_id, message_id, "✏️ Введи название для нового ключа (например: *Телефон*, *Ноутбук*):", reply_markup=keyboard)
+
+        elif data == "subscribe":
+            keyboard = {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]}
+            edit_message(
+                chat_id, message_id,
+                "💳 *Оформление подписки*\n\n"
+                "Тариф: *Базовый — 199 ₽/месяц*\n"
+                "✅ Безлимитный трафик\n"
+                "✅ Высокая скорость\n"
+                "✅ Автопродление\n\n"
+                "⏳ Оплата временно недоступна — скоро откроем!\n\n"
+                "Следи за обновлениями или напиши в поддержку 👇",
+                reply_markup=keyboard
+            )
 
         elif data == "support":
             keyboard = {
