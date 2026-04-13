@@ -10,11 +10,15 @@ import requests
 import psycopg2
 
 BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
-XUI_URL = os.environ['XUI_URL'].rstrip('/')
+# Принудительно http — панель 3x-ui без SSL
+_raw_url = os.environ['XUI_URL'].rstrip('/').replace('https://', 'http://')
+XUI_URL = _raw_url
 XUI_USERNAME = os.environ['XUI_USERNAME']
 XUI_PASSWORD = os.environ['XUI_PASSWORD']
 INBOUND_ID = 10
 DB_SCHEMA = os.environ.get('MAIN_DB_SCHEMA', 't_p89198250_telegram_vpn_bot_1')
+
+print(f"[init] XUI_URL={XUI_URL}")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
