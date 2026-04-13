@@ -346,9 +346,36 @@ def handle_update(update: dict):
             send_keys_list(chat_id, user_id, edit=True, message_id=message_id)
 
         elif data == "create_key":
+            keys = get_keys(user_id)
+            if keys:
+                old = keys[0]
+                date = old["created_at"].strftime("%d.%m.%Y") if old["created_at"] else "—"
+                keyboard = {
+                    "inline_keyboard": [
+                        [{"text": "✅ Да, удалить старый и создать новый", "callback_data": f"replace_key_{old['id']}"}],
+                        [{"text": "◀️ Отмена", "callback_data": "main_menu"}],
+                    ]
+                }
+                edit_message(
+                    chat_id, message_id,
+                    f"⚠️ *У тебя уже есть ключ*\n\n"
+                    f"🔑 «{old['name']}» (создан {date})\n\n"
+                    f"Он будет *отключён и удалён*. Продолжить?",
+                    reply_markup=keyboard
+                )
+            else:
+                set_step(user_id, "creating_key")
+                keyboard = {"inline_keyboard": [[{"text": "◀️ Отмена", "callback_data": "main_menu"}]]}
+                edit_message(chat_id, message_id, "✏️ Введи название для нового ключа (например: *Телефон*, *Ноутбук*):", reply_markup=keyboard)
+
+        elif data.startswith("replace_key_"):
+            old_id = int(data.split("_", 2)[2])
+            key_info = delete_key_by_id(old_id, user_id)
+            if key_info:
+                xui_delete_client(key_info["client_id"])
             set_step(user_id, "creating_key")
             keyboard = {"inline_keyboard": [[{"text": "◀️ Отмена", "callback_data": "main_menu"}]]}
-            edit_message(chat_id, message_id, "✏️ Введи название для нового ключа (например: *Телефон*, *Ноутбук*):", reply_markup=keyboard)
+            edit_message(chat_id, message_id, "✏️ Старый ключ удалён. Введи название для нового ключа (например: *Телефон*, *Ноутбук*):", reply_markup=keyboard)
 
         elif data.startswith("key_"):
             key_id = int(data.split("_", 1)[1])
