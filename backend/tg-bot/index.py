@@ -285,6 +285,7 @@ def send_main_menu(chat_id, user: dict, user_id: int = None):
         if keys:
             rows.append([{"text": "🔑 Показать мой ключ", "callback_data": f"key_{keys[0]['id']}"}])
     rows.append([{"text": "💳 Оформить подписку — 199 ₽/мес", "callback_data": "subscribe"}])
+    rows.append([{"text": "🔕 Отменить подписку", "callback_data": "cancel_sub"}])
     rows.append([{"text": "➕ Создать новый ключ", "callback_data": "create_key"}])
     rows.append([{"text": "🛟 Поддержка", "callback_data": "support"}])
     keyboard = {"inline_keyboard": rows}
@@ -398,6 +399,22 @@ def handle_update(update: dict):
                 set_step(user_id, "creating_key")
                 keyboard = {"inline_keyboard": [[{"text": "◀️ Отмена", "callback_data": "main_menu"}]]}
                 edit_message(chat_id, message_id, "✏️ Введи название для нового ключа (например: *Телефон*, *Ноутбук*):", reply_markup=keyboard)
+
+        elif data == "cancel_sub":
+            keyboard = {
+                "inline_keyboard": [
+                    [{"text": "👤 Написать @btb75", "url": "https://t.me/btb75"}],
+                    [{"text": "👤 Написать @makarevichas", "url": "https://t.me/makarevichas"}],
+                    [{"text": "◀️ Назад", "callback_data": "main_menu"}],
+                ]
+            }
+            edit_message(
+                chat_id, message_id,
+                "🔕 *Отмена подписки*\n\n"
+                "Чтобы отключить автопродление — напиши в поддержку, отключим в течение 2 часов.\n\n"
+                "После отмены подписка продолжит действовать до конца оплаченного периода.",
+                reply_markup=keyboard
+            )
 
         elif data == "subscribe":
             keyboard = {
