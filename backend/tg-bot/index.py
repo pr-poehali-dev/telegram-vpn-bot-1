@@ -402,7 +402,7 @@ def handle_update(update: dict):
         elif data == "subscribe":
             keyboard = {
                 "inline_keyboard": [
-                    [{"text": "📄 Читать оферту", "url": "https://rossovpn.poehali.dev/offer"}],
+                    [{"text": "📄 Читать оферту", "url": "https://telegra.ph/Publichnaya-oferta-RossoVPN-04-14"}],
                     [{"text": "🛟 Написать в поддержку", "callback_data": "support"}],
                     [{"text": "◀️ Назад", "callback_data": "main_menu"}],
                 ]
@@ -514,7 +514,7 @@ def handle_update(update: dict):
     if text == "/offer":
         keyboard = {
             "inline_keyboard": [
-                [{"text": "📄 Читать полную оферту", "url": "https://rossovpn.poehali.dev/offer"}],
+                [{"text": "📄 Читать полную оферту", "url": "https://telegra.ph/Publichnaya-oferta-RossoVPN-04-14"}],
             ]
         }
         send_message(
