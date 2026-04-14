@@ -285,7 +285,6 @@ def send_main_menu(chat_id, user: dict, user_id: int = None):
         if keys:
             rows.append([{"text": "🔑 Показать мой ключ", "callback_data": f"key_{keys[0]['id']}"}])
     rows.append([{"text": "💳 Оформить подписку — 199 ₽/мес", "callback_data": "subscribe"}])
-    rows.append([{"text": "🔕 Отменить подписку", "callback_data": "cancel_sub"}])
     rows.append([{"text": "➕ Создать новый ключ", "callback_data": "create_key"}])
     rows.append([{"text": "🛟 Поддержка", "callback_data": "support"}])
     keyboard = {"inline_keyboard": rows}
