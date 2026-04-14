@@ -166,8 +166,12 @@ def edit_message(chat_id, message_id, text, reply_markup=None, parse_mode="Markd
     requests.post(f"{TELEGRAM_API}/editMessageText", json=payload, timeout=10)
 
 
-def answer_callback(callback_id):
-    requests.post(f"{TELEGRAM_API}/answerCallbackQuery", json={"callback_query_id": callback_id}, timeout=5)
+def answer_callback(callback_id, text=None, show_alert=False):
+    payload = {"callback_query_id": callback_id}
+    if text:
+        payload["text"] = text
+        payload["show_alert"] = show_alert
+    requests.post(f"{TELEGRAM_API}/answerCallbackQuery", json=payload, timeout=5)
 
 
 # ── 3x-ui ─────────────────────────────────────────────────────────────────────
@@ -399,21 +403,8 @@ def handle_update(update: dict):
                 keyboard = {"inline_keyboard": [[{"text": "◀️ Отмена", "callback_data": "main_menu"}]]}
                 edit_message(chat_id, message_id, "✏️ Введи название для нового ключа (например: *Телефон*, *Ноутбук*):", reply_markup=keyboard)
 
-        elif data == "cancel_sub":
-            keyboard = {
-                "inline_keyboard": [
-                    [{"text": "👤 Написать @btb75", "url": "https://t.me/btb75"}],
-                    [{"text": "👤 Написать @makarevichas", "url": "https://t.me/makarevichas"}],
-                    [{"text": "◀️ Назад", "callback_data": "main_menu"}],
-                ]
-            }
-            edit_message(
-                chat_id, message_id,
-                "🔕 *Отмена подписки*\n\n"
-                "Чтобы отключить автопродление — напиши в поддержку, отключим в течение 2 часов.\n\n"
-                "После отмены подписка продолжит действовать до конца оплаченного периода.",
-                reply_markup=keyboard
-            )
+        elif data == "cancel_sub_do":
+            answer_callback(callback["id"], "⏳ Функция автоотмены скоро появится. Напиши в поддержку: @btb75", show_alert=True)
 
         elif data == "subscribe":
             keyboard = {
@@ -562,14 +553,14 @@ def handle_update(update: dict):
     if text == "/cancel":
         keyboard = {
             "inline_keyboard": [
-                [{"text": "🔕 Отменить подписку", "callback_data": "cancel_sub"}],
+                [{"text": "🔕 Отменить подписку", "callback_data": "cancel_sub_do"}],
             ]
         }
         send_message(
             chat_id,
             "🔕 *Отмена подписки*\n\n"
-            "Нажми кнопку ниже — мы свяжемся с тобой и отключим автопродление в течение 2 часов.\n\n"
-            "После отмены подписка продолжит действовать до конца оплаченного периода.\n\n"
+            "Нажми кнопку ниже — подписка будет автоматически отменена, а ЮКасса прекратит списания.\n\n"
+            "После отмены доступ сохранится до конца оплаченного периода.\n\n"
             "Поддержка: @btb75, @makarevichas",
             reply_markup=keyboard
         )
