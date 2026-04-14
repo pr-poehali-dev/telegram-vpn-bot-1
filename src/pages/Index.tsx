@@ -1,4 +1,5 @@
 import Icon from "@/components/ui/icon";
+import { Link } from "react-router-dom";
 
 export default function Index() {
   return (
@@ -73,8 +74,10 @@ export default function Index() {
       </div>
 
       {/* Footer */}
-      <div className="mt-8 text-xs text-muted-foreground font-mono animate-fade-in" style={{animationDelay: '0.3s', opacity: 0, animationFillMode: 'forwards'}}>
-        VPN · VLESS Reality · 3x-ui
+      <div className="mt-8 text-xs text-muted-foreground font-mono animate-fade-in flex items-center gap-3" style={{animationDelay: '0.3s', opacity: 0, animationFillMode: 'forwards'}}>
+        <span>VPN · VLESS Reality · 3x-ui</span>
+        <span className="text-border">·</span>
+        <Link to="/offer" className="hover:text-foreground transition-colors underline underline-offset-2">Оферта</Link>
       </div>
     </div>
   );
