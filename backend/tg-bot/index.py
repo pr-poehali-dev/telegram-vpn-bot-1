@@ -106,17 +106,23 @@ def set_step(user_id: int, step: str):
         conn.close()
 
 
-def save_key(user_id: int, client_id: str, name: str, vless_link: str):
+def save_key(user_id: int, client_id: str, name: str, vless_link: str, expires_at=None):
     conn = get_db()
     try:
         cur = conn.cursor()
         name_s = name.replace("'", "''")
         link_s = vless_link.replace("'", "''")
         cid_s = client_id.replace("'", "''")
-        cur.execute(f"""
-            INSERT INTO {DB_SCHEMA}.user_keys (user_id, client_id, name, vless_link, created_at)
-            VALUES ({user_id}, '{cid_s}', '{name_s}', '{link_s}', NOW())
-        """)
+        if expires_at:
+            cur.execute(f"""
+                INSERT INTO {DB_SCHEMA}.user_keys (user_id, client_id, name, vless_link, created_at, expires_at)
+                VALUES ({user_id}, '{cid_s}', '{name_s}', '{link_s}', NOW(), '{expires_at}')
+            """)
+        else:
+            cur.execute(f"""
+                INSERT INTO {DB_SCHEMA}.user_keys (user_id, client_id, name, vless_link, created_at)
+                VALUES ({user_id}, '{cid_s}', '{name_s}', '{link_s}', NOW())
+            """)
         conn.commit()
     finally:
         conn.close()
@@ -127,10 +133,10 @@ def get_keys(user_id: int) -> list:
     try:
         cur = conn.cursor()
         cur.execute(
-            f"SELECT id, client_id, name, vless_link, created_at FROM {DB_SCHEMA}.user_keys WHERE user_id = {user_id} ORDER BY created_at DESC"
+            f"SELECT id, client_id, name, vless_link, created_at, expires_at FROM {DB_SCHEMA}.user_keys WHERE user_id = {user_id} ORDER BY created_at DESC"
         )
         rows = cur.fetchall()
-        return [{"id": r[0], "client_id": r[1], "name": r[2], "vless_link": r[3], "created_at": r[4]} for r in rows]
+        return [{"id": r[0], "client_id": r[1], "name": r[2], "vless_link": r[3], "created_at": r[4], "expires_at": r[5]} for r in rows]
     finally:
         conn.close()
 
@@ -345,10 +351,15 @@ def send_keys_list(chat_id, user_id: int, edit=False, message_id=None):
 
 def send_key_detail(chat_id, message_id, key: dict):
     date = key["created_at"].strftime("%d.%m.%Y %H:%M") if key["created_at"] else "—"
+    if key.get("expires_at"):
+        expires_str = key["expires_at"].strftime("%d.%m.%Y")
+        validity = f"до *{expires_str}*"
+    else:
+        validity = "*бессрочно*"
     text = (
         f"🔑 *Ключ: {key['name']}*\n\n"
         f"📅 Создан: {date}\n"
-        f"⏳ Действует: *бессрочно*\n\n"
+        f"⏳ Действует: {validity}\n\n"
         f"`{key['vless_link']}`"
     )
     keyboard = {
@@ -384,12 +395,14 @@ def handle_update(update: dict):
                 user_name = user.get("name", "user")
                 full_label = f"trial_{user_name}_{user_id}"
                 import time
-                expires_ms = int((time.time() + 7 * 24 * 3600) * 1000)
+                from datetime import datetime, timedelta
+                expires_dt = datetime.utcnow() + timedelta(days=7)
+                expires_ms = int(expires_dt.timestamp() * 1000)
                 client_id, vless_link, error = xui_create_client(full_label, expires_ms)
                 if error:
                     send_message(chat_id, f"❌ Не удалось создать ключ: {error}\nНапиши в поддержку: @btb75")
                 else:
-                    save_key(user_id, client_id, "Пробный (7 дней)", vless_link)
+                    save_key(user_id, client_id, "Пробный (7 дней)", vless_link, expires_at=expires_dt)
                     conn = get_db()
                     cur = conn.cursor()
                     cur.execute(f"UPDATE {DB_SCHEMA}.user_states SET trial_used=TRUE WHERE user_id={user_id}")

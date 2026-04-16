@@ -1,0 +1,1 @@
+ALTER TABLE t_p89198250_telegram_vpn_bot_1.user_keys ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP DEFAULT NULL;
