@@ -126,6 +126,22 @@ def handler(event: dict, context) -> dict:
         )
         trial_notified += 1
 
+    # Уведомление когда пробный ключ только что истёк (в течение последнего часа)
+    cur.execute(
+        f"""SELECT DISTINCT user_id FROM {SCHEMA}.user_keys
+            WHERE expires_at BETWEEN NOW() - INTERVAL '1 hour' AND NOW()"""
+    )
+    trial_expired = 0
+    for (user_id,) in cur.fetchall():
+        send_message(user_id,
+            "🔒 *Пробный период закончился*\n\n"
+            "Спасибо, что попробовал RossoVPN!\n\n"
+            "Чтобы продолжить пользоваться VPN, оформи подписку:\n"
+            "💳 *199 ₽/месяц* — безлимитный трафик, высокая скорость, автопродление.\n\n"
+            "Оформить прямо сейчас → /start"
+        )
+        trial_expired += 1
+
     conn.commit()
     cur.close()
     conn.close()
@@ -133,5 +149,5 @@ def handler(event: dict, context) -> dict:
     return {
         "statusCode": 200,
         "headers": headers,
-        "body": json.dumps({"ok": True, "charged": charged, "failed": failed, "trial_notified": trial_notified})
+        "body": json.dumps({"ok": True, "charged": charged, "failed": failed, "trial_notified": trial_notified, "trial_expired": trial_expired})
     }
