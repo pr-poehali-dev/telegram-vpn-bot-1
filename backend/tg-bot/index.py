@@ -16,6 +16,7 @@ XUI_USERNAME = os.environ['XUI_USERNAME']
 XUI_PASSWORD = os.environ['XUI_PASSWORD']
 INBOUND_ID = 1
 DB_SCHEMA = os.environ.get('MAIN_DB_SCHEMA', 't_p89198250_telegram_vpn_bot_1')
+ADMIN_USERNAME = 'btb75'
 YUKASSA_SHOP_ID = os.environ.get('YUKASSA_SHOP_ID', '1327149')
 YUKASSA_API_KEY = os.environ.get('YUKASSA_API_KEY', '')
 
@@ -285,6 +286,71 @@ def xui_delete_client(client_id: str) -> str | None:
     return None
 
 
+# ── Админ БД ─────────────────────────────────────────────────────────────────
+
+def admin_get_users(limit: int = 20, offset: int = 0) -> list:
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"""
+            SELECT u.user_id, u.name, u.tg_username, u.trial_used, u.updated_at,
+                   COUNT(k.id) as keys_count
+            FROM {DB_SCHEMA}.user_states u
+            LEFT JOIN {DB_SCHEMA}.user_keys k ON k.user_id = u.user_id
+            GROUP BY u.user_id, u.name, u.tg_username, u.trial_used, u.updated_at
+            ORDER BY u.updated_at DESC
+            LIMIT {limit} OFFSET {offset}
+        """)
+        rows = cur.fetchall()
+        return [{"user_id": r[0], "name": r[1], "tg_username": r[2], "trial_used": r[3], "updated_at": r[4], "keys_count": r[5]} for r in rows]
+    finally:
+        conn.close()
+
+
+def admin_get_users_count() -> int:
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT COUNT(*) FROM {DB_SCHEMA}.user_states")
+        return cur.fetchone()[0]
+    finally:
+        conn.close()
+
+
+def admin_delete_user(target_user_id: int):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"DELETE FROM {DB_SCHEMA}.user_keys WHERE user_id = {target_user_id}")
+        cur.execute(f"DELETE FROM {DB_SCHEMA}.user_states WHERE user_id = {target_user_id}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def send_admin_menu(chat_id, message_id=None, edit=False):
+    total = admin_get_users_count()
+    users = admin_get_users(limit=10)
+    lines = [f"🛠 *Админ-панель RossoVPN*\n\nВсего пользователей: *{total}*\n"]
+    rows = []
+    for u in users:
+        name = u["name"] or "—"
+        tg = f"@{u['tg_username']}" if u["tg_username"] else "без username"
+        keys = u["keys_count"]
+        trial = "✅" if u["trial_used"] else "—"
+        lines.append(f"👤 *{name}* ({tg}) | ключей: {keys} | триал: {trial}")
+        rows.append([{"text": f"🗑 Удалить {name} ({tg})", "callback_data": f"admin_del_{u['user_id']}"}])
+
+    rows.append([{"text": "🔄 Обновить", "callback_data": "admin_panel"}])
+    rows.append([{"text": "◀️ Главное меню", "callback_data": "main_menu"}])
+    keyboard = {"inline_keyboard": rows}
+    text = "\n".join(lines)
+    if edit and message_id:
+        edit_message(chat_id, message_id, text, reply_markup=keyboard)
+    else:
+        send_message(chat_id, text, reply_markup=keyboard)
+
+
 # ── Меню ─────────────────────────────────────────────────────────────────────
 
 def send_trial_menu(chat_id, name: str):
@@ -315,6 +381,8 @@ def send_main_menu(chat_id, user: dict, user_id: int = None):
     rows.append([{"text": "💳 Оформить подписку — 199 ₽/мес", "callback_data": "subscribe"}])
     rows.append([{"text": "➕ Создать новый ключ", "callback_data": "create_key"}])
     rows.append([{"text": "🛟 Поддержка", "callback_data": "support"}])
+    if user.get("tg_username") == ADMIN_USERNAME:
+        rows.append([{"text": "🛠 Админ панель", "callback_data": "admin_panel"}])
     keyboard = {"inline_keyboard": rows}
     send_message(
         chat_id,
@@ -635,6 +703,24 @@ def handle_update(update: dict):
                 ]
             }
             edit_message(chat_id, message_id, "⚠️ Ты уверен? Ключ будет удалён и перестанет работать.", reply_markup=keyboard)
+
+        elif data == "admin_panel":
+            if callback["from"].get("username") != ADMIN_USERNAME:
+                answer_callback(callback["id"], "Доступ запрещён", show_alert=True)
+                return
+            send_admin_menu(chat_id, message_id, edit=True)
+
+        elif data.startswith("admin_del_"):
+            if callback["from"].get("username") != ADMIN_USERNAME:
+                answer_callback(callback["id"], "Доступ запрещён", show_alert=True)
+                return
+            target_id = int(data.split("_", 2)[2])
+            keys = get_keys(target_id)
+            for k in keys:
+                xui_delete_client(k["client_id"])
+            admin_delete_user(target_id)
+            answer_callback(callback["id"], "✅ Пользователь удалён", show_alert=True)
+            send_admin_menu(chat_id, message_id, edit=True)
 
         elif data.startswith("confirm_del_"):
             key_id = int(data.split("_", 2)[2])
