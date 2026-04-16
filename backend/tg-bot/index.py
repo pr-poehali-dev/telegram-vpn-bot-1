@@ -353,7 +353,7 @@ def send_admin_menu(chat_id, message_id=None, edit=False):
         if sub_status == "active" and sub_expires:
             if sub_expires.tzinfo is None:
                 sub_expires = sub_expires.replace(tzinfo=timezone.utc)
-            sub_str = f"💳 до {sub_expires.strftime('%d.%m.%Y')}"
+            sub_str = f"💳 с {sub_expires.strftime('%d.%m.%Y')}"
         elif sub_status in ("cancelled", "expired") and sub_expires:
             if sub_expires.tzinfo is None:
                 sub_expires = sub_expires.replace(tzinfo=timezone.utc)
