@@ -1,0 +1,1 @@
+ALTER TABLE t_p89198250_telegram_vpn_bot_1.user_states ADD COLUMN IF NOT EXISTS trial_used BOOLEAN NOT NULL DEFAULT FALSE;

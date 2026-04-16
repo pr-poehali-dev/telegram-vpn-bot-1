@@ -62,11 +62,11 @@ def get_user(user_id: int) -> dict:
     try:
         cur = conn.cursor()
         cur.execute(
-            f"SELECT step, name, tg_username, tg_first_name FROM {DB_SCHEMA}.user_states WHERE user_id = {user_id}"
+            f"SELECT step, name, tg_username, tg_first_name, trial_used FROM {DB_SCHEMA}.user_states WHERE user_id = {user_id}"
         )
         row = cur.fetchone()
         if row:
-            return {"step": row[0], "name": row[1], "tg_username": row[2], "tg_first_name": row[3]}
+            return {"step": row[0], "name": row[1], "tg_username": row[2], "tg_first_name": row[3], "trial_used": row[4]}
         return {}
     finally:
         conn.close()
@@ -191,7 +191,7 @@ def xui_login():
     return None
 
 
-def xui_create_client(label: str) -> tuple:
+def xui_create_client(label: str, expires_ms: int = 0) -> tuple:
     """Создаёт клиента в панели, возвращает (client_id, vless_link) или (None, error)."""
     session = xui_login()
     if not session:
@@ -204,7 +204,7 @@ def xui_create_client(label: str) -> tuple:
         "email": label,
         "limitIp": 0,
         "totalGB": 0,
-        "expiryTime": 0,
+        "expiryTime": expires_ms,
         "enable": True,
         "tgId": "",
         "subId": str(uuid.uuid4())[:8],
@@ -280,6 +280,22 @@ def xui_delete_client(client_id: str) -> str | None:
 
 
 # ── Меню ─────────────────────────────────────────────────────────────────────
+
+def send_trial_menu(chat_id, name: str):
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "🎁 Получить пробный ключ на 7 дней", "callback_data": "get_trial"}],
+            [{"text": "🛟 Поддержка", "callback_data": "support"}],
+        ]
+    }
+    send_message(
+        chat_id,
+        f"👋 Привет, *{name}*! Добро пожаловать в RossoVPN.\n\n"
+        "Попробуй VPN бесплатно — *7 дней без ограничений*.\n\n"
+        "Нажми кнопку ниже, чтобы получить пробный ключ 👇",
+        reply_markup=keyboard
+    )
+
 
 def send_main_menu(chat_id, user: dict, user_id: int = None):
     name = user.get("name", "—")
@@ -360,7 +376,36 @@ def handle_update(update: dict):
 
         user = get_user(user_id)
 
-        if data == "main_menu":
+        if data == "get_trial":
+            if user.get("trial_used"):
+                answer_callback(callback["id"], "Пробный ключ уже был использован", show_alert=True)
+            else:
+                send_message(chat_id, "⏳ Создаю пробный ключ на 7 дней, подождите...")
+                user_name = user.get("name", "user")
+                full_label = f"trial_{user_name}_{user_id}"
+                import time
+                expires_ms = int((time.time() + 7 * 24 * 3600) * 1000)
+                client_id, vless_link, error = xui_create_client(full_label, expires_ms)
+                if error:
+                    send_message(chat_id, f"❌ Не удалось создать ключ: {error}\nНапиши в поддержку: @btb75")
+                else:
+                    save_key(user_id, client_id, "Пробный (7 дней)", vless_link)
+                    conn = get_db()
+                    cur = conn.cursor()
+                    cur.execute(f"UPDATE {DB_SCHEMA}.user_states SET trial_used=TRUE WHERE user_id={user_id}")
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                    send_message(
+                        chat_id,
+                        "🎁 *Пробный ключ активирован на 7 дней!*\n\n"
+                        f"🔑 Твой VLESS ключ:\n\n`{vless_link}`\n\n"
+                        "Скопируй и вставь в приложение для подключения.\n\n"
+                        "После пробного периода оформи подписку — *199 ₽/месяц*."
+                    )
+                    send_main_menu(chat_id, user, user_id)
+
+        elif data == "main_menu":
             set_step(user_id, "menu")
             send_main_menu(chat_id, user, user_id)
 
@@ -610,7 +655,10 @@ def handle_update(update: dict):
     if text == "/start":
         if user.get("name"):
             upsert_user(user_id, "menu", user["name"], tg_username, tg_first_name)
-            send_main_menu(chat_id, user, user_id)
+            if not user.get("trial_used"):
+                send_trial_menu(chat_id, user["name"])
+            else:
+                send_main_menu(chat_id, user, user_id)
         else:
             upsert_user(user_id, "ask_name", "", tg_username, tg_first_name)
             send_message(
@@ -693,7 +741,7 @@ def handle_update(update: dict):
         name = text[:50]
         upsert_user(user_id, "menu", name, tg_username, tg_first_name)
         send_message(chat_id, f"✅ Отлично, *{name}*! Регистрация завершена.")
-        send_main_menu(chat_id, {**user, "name": name}, user_id)
+        send_trial_menu(chat_id, name)
         return
 
     if step == "creating_key":
