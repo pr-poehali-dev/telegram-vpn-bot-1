@@ -715,6 +715,21 @@ def handle_update(update: dict):
                 answer_callback(callback["id"], "Доступ запрещён", show_alert=True)
                 return
             target_id = int(data.split("_", 2)[2])
+            users = admin_get_users(limit=100)
+            target = next((u for u in users if u["user_id"] == target_id), None)
+            name = target["name"] if target else str(target_id)
+            tg = f"@{target['tg_username']}" if target and target["tg_username"] else ""
+            keyboard = {"inline_keyboard": [
+                [{"text": "✅ Да, удалить", "callback_data": f"admin_confirm_del_{target_id}"}],
+                [{"text": "◀️ Отмена", "callback_data": "admin_panel"}],
+            ]}
+            edit_message(chat_id, message_id, f"⚠️ Удалить пользователя *{name}* {tg}?\n\nВсе его ключи тоже будут удалены.", reply_markup=keyboard)
+
+        elif data.startswith("admin_confirm_del_"):
+            if callback["from"].get("username") not in ADMIN_USERNAMES:
+                answer_callback(callback["id"], "Доступ запрещён", show_alert=True)
+                return
+            target_id = int(data.split("_", 3)[3])
             keys = get_keys(target_id)
             for k in keys:
                 xui_delete_client(k["client_id"])
