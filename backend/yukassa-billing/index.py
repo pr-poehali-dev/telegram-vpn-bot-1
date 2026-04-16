@@ -9,6 +9,31 @@ DB_URL = os.environ["DATABASE_URL"]
 SCHEMA = os.environ.get("MAIN_DB_SCHEMA", "t_p89198250_telegram_vpn_bot_1")
 SHOP_ID = os.environ.get("YUKASSA_SHOP_ID", "")
 API_KEY = os.environ.get("YUKASSA_API_KEY", "")
+XUI_URL = os.environ.get("XUI_URL", "").rstrip("/").replace("https://", "http://")
+XUI_USERNAME = os.environ.get("XUI_USERNAME", "")
+XUI_PASSWORD = os.environ.get("XUI_PASSWORD", "")
+INBOUND_ID = 10
+
+
+def xui_login():
+    session = requests.Session()
+    resp = session.post(f"{XUI_URL}/login", data={"username": XUI_USERNAME, "password": XUI_PASSWORD}, timeout=10)
+    if resp.status_code == 200 and resp.json().get("success"):
+        return session
+    return None
+
+
+def xui_delete_client(client_id: str):
+    session = xui_login()
+    if not session:
+        return "Ошибка авторизации в панели"
+    resp = session.post(f"{XUI_URL}/panel/api/inbounds/{INBOUND_ID}/delClient/{client_id}", timeout=10)
+    if resp.status_code != 200:
+        return f"Ошибка API: {resp.status_code}"
+    data = resp.json()
+    if not data.get("success"):
+        return data.get("msg", "Ошибка удаления")
+    return None
 
 
 def get_db():
@@ -142,6 +167,30 @@ def handler(event: dict, context) -> dict:
         )
         trial_expired += 1
 
+    # Удаление пробных ключей через 5 дней после истечения (если нет активной подписки)
+    cur.execute(
+        f"""SELECT uk.id, uk.user_id, uk.client_id FROM {SCHEMA}.user_keys uk
+            WHERE uk.expires_at IS NOT NULL
+            AND uk.expires_at < NOW() - INTERVAL '5 days'
+            AND NOT EXISTS (
+                SELECT 1 FROM {SCHEMA}.subscriptions s
+                WHERE s.user_id = uk.user_id AND s.status = 'active'
+            )"""
+    )
+    keys_to_delete = cur.fetchall()
+    deleted = 0
+    for key_id, user_id, client_id in keys_to_delete:
+        xui_delete_client(client_id)
+        cur.execute(f"DELETE FROM {SCHEMA}.user_keys WHERE id = %s", (key_id,))
+        send_message(user_id,
+            "🗑 *Ваш пробный ключ удалён*\n\n"
+            "Прошло 5 дней с окончания пробного периода — ключ был автоматически удалён.\n\n"
+            "Чтобы снова пользоваться RossoVPN, оформите подписку:\n"
+            "💳 *199 ₽/месяц* — безлимитный трафик, высокая скорость.\n\n"
+            "Подключиться → /start"
+        )
+        deleted += 1
+
     conn.commit()
     cur.close()
     conn.close()
@@ -149,5 +198,5 @@ def handler(event: dict, context) -> dict:
     return {
         "statusCode": 200,
         "headers": headers,
-        "body": json.dumps({"ok": True, "charged": charged, "failed": failed, "trial_notified": trial_notified, "trial_expired": trial_expired})
+        "body": json.dumps({"ok": True, "charged": charged, "failed": failed, "trial_notified": trial_notified, "trial_expired": trial_expired, "deleted": deleted})
     }
