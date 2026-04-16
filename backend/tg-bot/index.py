@@ -762,20 +762,23 @@ def handle_update(update: dict):
         upsert_user(user_id, "menu", "", tg_username, tg_first_name)
         send_message(chat_id, "⏳ Создаю ключ, подождите...")
 
+        from datetime import datetime, timedelta
         user_name = get_user(user_id).get("name", "user")
         full_label = f"{user_name}_{label}_{user_id}"
+        expires_dt = datetime.utcnow() + timedelta(days=7)
+        expires_ms = int(expires_dt.timestamp() * 1000)
 
-        client_id, vless_link, error = xui_create_client(full_label)
+        client_id, vless_link, error = xui_create_client(full_label, expires_ms)
         if error:
             send_message(chat_id, f"❌ Не удалось создать ключ: {error}")
             return
 
-        save_key(user_id, client_id, label, vless_link)
+        save_key(user_id, client_id, label, vless_link, expires_at=expires_dt)
         set_step(user_id, "menu")
 
         text_out = (
             f"✅ *Ключ «{label}» создан!*\n\n"
-            f"⏳ Действует: *бессрочно*\n\n"
+            f"⏳ Действует: *7 дней*\n\n"
             f"🔑 Твой VLESS ключ:\n\n"
             f"`{vless_link}`\n\n"
             f"Скопируй и вставь в приложение для подключения."
