@@ -295,15 +295,22 @@ def admin_get_users(limit: int = 20, offset: int = 0) -> list:
         cur.execute(f"""
             SELECT u.user_id, u.name, u.tg_username, u.trial_used, u.updated_at,
                    COUNT(k.id) as keys_count,
-                   MAX(k.expires_at) as key_expires
+                   MAX(k.expires_at) as key_expires,
+                   s.status as sub_status,
+                   s.expires_at as sub_expires
             FROM {DB_SCHEMA}.user_states u
             LEFT JOIN {DB_SCHEMA}.user_keys k ON k.user_id = u.user_id
-            GROUP BY u.user_id, u.name, u.tg_username, u.trial_used, u.updated_at
+            LEFT JOIN (
+                SELECT DISTINCT ON (user_id) user_id, status, expires_at
+                FROM {DB_SCHEMA}.subscriptions
+                ORDER BY user_id, id DESC
+            ) s ON s.user_id = u.user_id
+            GROUP BY u.user_id, u.name, u.tg_username, u.trial_used, u.updated_at, s.status, s.expires_at
             ORDER BY u.updated_at DESC
             LIMIT {limit} OFFSET {offset}
         """)
         rows = cur.fetchall()
-        return [{"user_id": r[0], "name": r[1], "tg_username": r[2], "trial_used": r[3], "updated_at": r[4], "keys_count": r[5], "key_expires": r[6]} for r in rows]
+        return [{"user_id": r[0], "name": r[1], "tg_username": r[2], "trial_used": r[3], "updated_at": r[4], "keys_count": r[5], "key_expires": r[6], "sub_status": r[7], "sub_expires": r[8]} for r in rows]
     finally:
         conn.close()
 
@@ -339,25 +346,51 @@ def send_admin_menu(chat_id, message_id=None, edit=False):
     for u in users:
         name = u["name"] or "—"
         tg = f"@{u['tg_username']}" if u["tg_username"] else "без username"
-        keys = u["keys_count"]
-        trial = "✅" if u["trial_used"] else "—"
-        expires = u.get("key_expires")
-        if expires:
-            if expires.tzinfo is None:
-                from datetime import timezone as tz
-                expires = expires.replace(tzinfo=tz.utc)
-            days_left = (expires - now).days
-            if days_left < 0:
-                exp_str = f"❌ истёк {expires.strftime('%d.%m.%Y')}"
-            elif days_left == 0:
-                exp_str = "⚠️ истекает сегодня"
-            elif days_left <= 3:
-                exp_str = f"⚠️ {days_left}д"
+
+        # Подписка
+        sub_status = u.get("sub_status")
+        sub_expires = u.get("sub_expires")
+        if sub_status == "active" and sub_expires:
+            if sub_expires.tzinfo is None:
+                sub_expires = sub_expires.replace(tzinfo=timezone.utc)
+            sub_str = f"💳 до {sub_expires.strftime('%d.%m.%Y')}"
+        elif sub_status in ("cancelled", "expired") and sub_expires:
+            if sub_expires.tzinfo is None:
+                sub_expires = sub_expires.replace(tzinfo=timezone.utc)
+            sub_str = f"🔕 истекла {sub_expires.strftime('%d.%m.%Y')}"
+        elif u.get("trial_used"):
+            # Был триал — смотрим когда истёк ключ
+            key_exp = u.get("key_expires")
+            if key_exp:
+                if key_exp.tzinfo is None:
+                    key_exp = key_exp.replace(tzinfo=timezone.utc)
+                if key_exp < now:
+                    sub_str = f"⏰ триал истёк {key_exp.strftime('%d.%m.%Y')}"
+                else:
+                    sub_str = f"🎁 триал до {key_exp.strftime('%d.%m.%Y')}"
             else:
-                exp_str = f"до {expires.strftime('%d.%m.%Y')}"
+                sub_str = "🎁 триал использован"
         else:
-            exp_str = "нет ключа"
-        lines.append(f"👤 *{name}* ({tg}) | триал: {trial} | 🔑 {exp_str}")
+            sub_str = "➖ нет"
+
+        # Ключ
+        key_expires = u.get("key_expires")
+        if key_expires:
+            if key_expires.tzinfo is None:
+                key_expires = key_expires.replace(tzinfo=timezone.utc)
+            days_left = (key_expires - now).days
+            if days_left < 0:
+                key_str = f"❌ ключ истёк {key_expires.strftime('%d.%m.%Y')}"
+            elif days_left == 0:
+                key_str = "⚠️ ключ истекает сегодня"
+            elif days_left <= 3:
+                key_str = f"⚠️ ключ {days_left}д"
+            else:
+                key_str = f"🔑 до {key_expires.strftime('%d.%m.%Y')}"
+        else:
+            key_str = "🔑 нет ключа"
+
+        lines.append(f"👤 *{name}* ({tg})\n   {sub_str} | {key_str}")
         rows.append([{"text": f"🗑 Удалить {name} ({tg})", "callback_data": f"admin_del_{u['user_id']}"}])
 
     rows.append([{"text": "🔄 Обновить", "callback_data": "admin_panel"}])
