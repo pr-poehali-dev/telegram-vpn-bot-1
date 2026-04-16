@@ -16,7 +16,7 @@ XUI_USERNAME = os.environ['XUI_USERNAME']
 XUI_PASSWORD = os.environ['XUI_PASSWORD']
 INBOUND_ID = 1
 DB_SCHEMA = os.environ.get('MAIN_DB_SCHEMA', 't_p89198250_telegram_vpn_bot_1')
-ADMIN_USERNAME = 'btb75'
+ADMIN_USERNAMES = {'btb75', 'makarevichas'}
 YUKASSA_SHOP_ID = os.environ.get('YUKASSA_SHOP_ID', '1327149')
 YUKASSA_API_KEY = os.environ.get('YUKASSA_API_KEY', '')
 
@@ -381,7 +381,7 @@ def send_main_menu(chat_id, user: dict, user_id: int = None):
     rows.append([{"text": "💳 Оформить подписку — 199 ₽/мес", "callback_data": "subscribe"}])
     rows.append([{"text": "➕ Создать новый ключ", "callback_data": "create_key"}])
     rows.append([{"text": "🛟 Поддержка", "callback_data": "support"}])
-    if user.get("tg_username") == ADMIN_USERNAME:
+    if user.get("tg_username") in ADMIN_USERNAMES:
         rows.append([{"text": "🛠 Админ панель", "callback_data": "admin_panel"}])
     keyboard = {"inline_keyboard": rows}
     send_message(
@@ -705,13 +705,13 @@ def handle_update(update: dict):
             edit_message(chat_id, message_id, "⚠️ Ты уверен? Ключ будет удалён и перестанет работать.", reply_markup=keyboard)
 
         elif data == "admin_panel":
-            if callback["from"].get("username") != ADMIN_USERNAME:
+            if callback["from"].get("username") not in ADMIN_USERNAMES:
                 answer_callback(callback["id"], "Доступ запрещён", show_alert=True)
                 return
             send_admin_menu(chat_id, message_id, edit=True)
 
         elif data.startswith("admin_del_"):
-            if callback["from"].get("username") != ADMIN_USERNAME:
+            if callback["from"].get("username") not in ADMIN_USERNAMES:
                 answer_callback(callback["id"], "Доступ запрещён", show_alert=True)
                 return
             target_id = int(data.split("_", 2)[2])
