@@ -208,7 +208,7 @@ def xui_create_client(label: str, expires_ms: int = 0) -> tuple:
         "id": client_id,
         "flow": "xtls-rprx-vision",
         "email": label,
-        "limitIp": 0,
+        "limitIp": 1,
         "totalGB": 0,
         "expiryTime": expires_ms,
         "enable": True,
