@@ -369,14 +369,38 @@ def handle_update(update: dict):
             tg_u = user.get("tg_username", "")
             keys = get_keys(user_id)
             tg_line = f"@{tg_u}" if tg_u else "не указан"
+
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT status, expires_at FROM {DB_SCHEMA}.subscriptions WHERE user_id=%s ORDER BY id DESC LIMIT 1",
+                (user_id,)
+            )
+            sub = cur.fetchone()
+            cur.close()
+            conn.close()
+
+            if sub and sub[0] == "active" and sub[1]:
+                expires = sub[1].strftime("%d.%m.%Y")
+                sub_line = f"💳 Активна до *{expires}*"
+            elif sub and sub[0] == "cancelled":
+                sub_line = "🔕 Отменена"
+            elif sub and sub[0] == "expired":
+                sub_line = "❌ Истекла"
+            else:
+                sub_line = "Нет активной подписки"
+
             text = (
                 f"👤 *Профиль*\n\n"
                 f"Имя: *{name}*\n"
                 f"Telegram: {tg_line}\n"
                 f"Ключей: *{len(keys)}*\n"
-                f"Тариф: *Бесплатный (∞)*"
+                f"Подписка: {sub_line}"
             )
-            keyboard = {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]}
+            kb_rows = [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]
+            if not sub or sub[0] != "active":
+                kb_rows.insert(0, [{"text": "💳 Оформить подписку — 199 ₽/мес", "callback_data": "subscribe"}])
+            keyboard = {"inline_keyboard": kb_rows}
             edit_message(chat_id, message_id, text, reply_markup=keyboard)
 
         elif data == "my_keys":
