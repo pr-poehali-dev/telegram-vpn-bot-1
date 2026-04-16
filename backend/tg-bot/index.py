@@ -16,6 +16,8 @@ XUI_USERNAME = os.environ['XUI_USERNAME']
 XUI_PASSWORD = os.environ['XUI_PASSWORD']
 INBOUND_ID = 10
 DB_SCHEMA = os.environ.get('MAIN_DB_SCHEMA', 't_p89198250_telegram_vpn_bot_1')
+YUKASSA_SHOP_ID = os.environ.get('YUKASSA_SHOP_ID', '1327149')
+YUKASSA_API_KEY = os.environ.get('YUKASSA_API_KEY', '')
 
 print(f"[init] XUI_URL={XUI_URL}")
 
@@ -404,31 +406,108 @@ def handle_update(update: dict):
                 edit_message(chat_id, message_id, "✏️ Введи название для нового ключа (например: *Телефон*, *Ноутбук*):", reply_markup=keyboard)
 
         elif data == "cancel_sub_do":
-            answer_callback(callback["id"], "⏳ Функция автоотмены скоро появится. Напиши в поддержку: @btb75", show_alert=True)
+            answer_callback(callback["id"], "⏳ Обрабатываем запрос...", show_alert=False)
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT id, payment_method_id FROM {DB_SCHEMA}.subscriptions WHERE user_id=%s AND status='active' ORDER BY id DESC LIMIT 1",
+                (user_id,)
+            )
+            sub = cur.fetchone()
+            if sub and YUKASSA_API_KEY:
+                sub_id, payment_method_id = sub
+                resp = requests.post(
+                    f"https://api.yookassa.ru/v3/recurring-payments/{payment_method_id}/cancel",
+                    auth=(YUKASSA_SHOP_ID, YUKASSA_API_KEY),
+                    timeout=10
+                )
+                cur.execute(
+                    f"UPDATE {DB_SCHEMA}.subscriptions SET status='cancelled', cancelled_at=NOW(), updated_at=NOW() WHERE id=%s",
+                    (sub_id,)
+                )
+                conn.commit()
+                send_message(
+                    chat_id,
+                    "✅ *Подписка отменена*\n\n"
+                    "Автопродление отключено — больше списаний не будет.\n"
+                    "Доступ к VPN сохранится до конца оплаченного периода."
+                )
+            elif sub:
+                cur.execute(
+                    f"UPDATE {DB_SCHEMA}.subscriptions SET status='cancelled', cancelled_at=NOW(), updated_at=NOW() WHERE id=%s",
+                    (sub[0],)
+                )
+                conn.commit()
+                send_message(chat_id, "✅ Подписка отменена. Списаний больше не будет.")
+            else:
+                send_message(chat_id, "У тебя нет активной подписки.")
+            cur.close()
+            conn.close()
 
         elif data == "subscribe":
-            keyboard = {
-                "inline_keyboard": [
-                    [{"text": "📄 Читать оферту", "url": "https://telegra.ph/Publichnaya-oferta-RossoVPN-04-14"}],
-                    [{"text": "🛟 Написать в поддержку", "callback_data": "support"}],
-                    [{"text": "◀️ Назад", "callback_data": "main_menu"}],
-                ]
-            }
-            edit_message(
-                chat_id, message_id,
-                "💳 *Оформление подписки*\n\n"
-                "Тариф: *Базовый — 199 ₽/месяц*\n"
-                "✅ Безлимитный трафик\n"
-                "✅ Высокая скорость\n"
-                "✅ Автопродление каждые 30 дней\n\n"
-                "📌 *Условия автоплатежей:*\n"
-                "— Списание происходит раз в 30 дней\n"
-                "— За 3 дня до списания придёт уведомление\n"
-                "— Отключить можно в любой момент командой /cancel\n\n"
-                "⏳ *Оплата временно недоступна — скоро откроем!*\n\n"
-                "Нажав «Оплатить», ты принимаешь условия публичной оферты 👇",
-                reply_markup=keyboard
-            )
+            if not YUKASSA_API_KEY:
+                edit_message(
+                    chat_id, message_id,
+                    "⏳ *Оплата временно недоступна*\n\nПожалуйста, попробуй позже или напиши в поддержку: @btb75",
+                    reply_markup={"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]}
+                )
+            else:
+                idempotency_key = str(uuid.uuid4())
+                payment_payload = {
+                    "amount": {"value": "199.00", "currency": "RUB"},
+                    "confirmation": {"type": "redirect", "return_url": "https://t.me/RossoVPN_bot"},
+                    "capture": True,
+                    "save_payment_method": True,
+                    "description": f"Подписка RossoVPN — 30 дней (user {user_id})",
+                    "metadata": {"user_id": str(user_id)}
+                }
+                resp = requests.post(
+                    "https://api.yookassa.ru/v3/payments",
+                    auth=(YUKASSA_SHOP_ID, YUKASSA_API_KEY),
+                    json=payment_payload,
+                    headers={"Idempotence-Key": idempotency_key},
+                    timeout=15
+                )
+                pay_data = resp.json()
+                pay_id = pay_data.get("id")
+                pay_url = pay_data.get("confirmation", {}).get("confirmation_url")
+
+                if pay_id and pay_url:
+                    conn = get_db()
+                    cur = conn.cursor()
+                    cur.execute(
+                        f"INSERT INTO {DB_SCHEMA}.payments (user_id, yukassa_payment_id, amount, status) VALUES (%s, %s, 199.00, 'pending')",
+                        (user_id, pay_id)
+                    )
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+
+                    keyboard = {
+                        "inline_keyboard": [
+                            [{"text": "💳 Перейти к оплате", "url": pay_url}],
+                            [{"text": "📄 Читать оферту", "url": "https://telegra.ph/Publichnaya-oferta-RossoVPN-04-14"}],
+                            [{"text": "◀️ Назад", "callback_data": "main_menu"}],
+                        ]
+                    }
+                    edit_message(
+                        chat_id, message_id,
+                        "💳 *Оформление подписки*\n\n"
+                        "Тариф: *Базовый — 199 ₽/месяц*\n"
+                        "✅ Безлимитный трафик\n"
+                        "✅ Высокая скорость\n"
+                        "✅ Автопродление каждые 30 дней\n\n"
+                        "📌 После оплаты карта сохранится — следующие списания будут автоматическими.\n"
+                        "Отключить в любой момент: /cancel\n\n"
+                        "Нажимая «Перейти к оплате», ты принимаешь условия публичной оферты 👇",
+                        reply_markup=keyboard
+                    )
+                else:
+                    edit_message(
+                        chat_id, message_id,
+                        "❌ Не удалось создать платёж. Попробуй позже или напиши в поддержку: @btb75",
+                        reply_markup={"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]}
+                    )
 
         elif data == "support":
             keyboard = {

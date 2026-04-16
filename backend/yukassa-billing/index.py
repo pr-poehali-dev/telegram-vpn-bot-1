@@ -7,8 +7,8 @@ import requests
 TELEGRAM_API = f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}"
 DB_URL = os.environ["DATABASE_URL"]
 SCHEMA = os.environ.get("MAIN_DB_SCHEMA", "t_p89198250_telegram_vpn_bot_1")
-SHOP_ID = os.environ["YUKASSA_SHOP_ID"]
-API_KEY = os.environ["YUKASSA_API_KEY"]
+SHOP_ID = os.environ.get("YUKASSA_SHOP_ID", "")
+API_KEY = os.environ.get("YUKASSA_API_KEY", "")
 
 
 def get_db():
