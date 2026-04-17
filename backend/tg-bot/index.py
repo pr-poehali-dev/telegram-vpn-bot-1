@@ -17,7 +17,7 @@ XUI_USERNAME = os.environ['XUI_USERNAME']
 XUI_PASSWORD = os.environ['XUI_PASSWORD']
 INBOUND_ID = 1
 DB_SCHEMA = os.environ.get('MAIN_DB_SCHEMA', 't_p89198250_telegram_vpn_bot_1')
-ADMIN_USERNAMES = {'btb75', 'makarevichas'}
+ADMIN_USERNAMES = {'btb75', 'makarevichas'}  # admins
 YUKASSA_SHOP_ID = os.environ.get('YUKASSA_SHOP_ID', '1327149')
 YUKASSA_API_KEY = os.environ.get('YUKASSA_API_KEY', '')
 
