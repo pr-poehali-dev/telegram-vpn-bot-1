@@ -162,12 +162,12 @@ def handle_payment_succeeded(user_id: int, payment_id: str, payment_method_id: s
 
     conn.commit()
 
-    # Смотрим ключ пользователя
+    # Смотрим все ключи пользователя
     cur.execute(
-        f"SELECT id, client_id, name, expires_at FROM {SCHEMA}.user_keys WHERE user_id=%s ORDER BY created_at DESC LIMIT 1",
+        f"SELECT id, client_id, name, expires_at FROM {SCHEMA}.user_keys WHERE user_id=%s ORDER BY created_at DESC",
         (user_id,)
     )
-    key_row = cur.fetchone()
+    key_rows = cur.fetchall()
 
     # Смотрим имя пользователя
     cur.execute(f"SELECT name FROM {SCHEMA}.user_states WHERE user_id=%s", (user_id,))
@@ -176,41 +176,33 @@ def handle_payment_succeeded(user_id: int, payment_id: str, payment_method_id: s
 
     expires_ms = int(new_expires.timestamp() * 1000)
 
-    if key_row:
-        # Ключ уже есть — вычисляем новый срок с учётом остатка
-        key_id, client_id, key_name, key_expires = key_row
-        if key_expires:
-            if key_expires.tzinfo is None:
-                key_expires = key_expires.replace(tzinfo=timezone.utc)
-            # Если ключ ещё действует — добавляем 30 дней к его сроку
-            base_key = key_expires if key_expires > now else now
-        else:
-            base_key = now
-        new_key_expires = base_key + timedelta(days=30)
-        new_key_expires_ms = int(new_key_expires.timestamp() * 1000)
+    if key_rows:
+        # Обновляем все ключи пользователя до даты окончания подписки
+        for key_id, client_id, key_name, key_expires in key_rows:
+            err = xui_update_client_expiry(client_id, key_name, expires_ms)
+            if err:
+                print(f"[webhook] xui update error for key {key_id}: {err}")
+            cur.execute(
+                f"UPDATE {SCHEMA}.user_keys SET expires_at=%s WHERE id=%s",
+                (new_expires, key_id)
+            )
 
-        err = xui_update_client_expiry(client_id, key_name, new_key_expires_ms)
-        if err:
-            print(f"[webhook] xui update error: {err}")
-
-        cur.execute(
-            f"UPDATE {SCHEMA}.user_keys SET expires_at=%s WHERE id=%s",
-            (new_key_expires, key_id)
-        )
         conn.commit()
         cur.close()
         conn.close()
 
+        keys_count = len(key_rows)
+        keys_word = "ключ" if keys_count == 1 else ("ключа" if keys_count < 5 else "ключей")
         send_message(
             user_id,
             "✅ *Оплата прошла успешно!*\n\n"
             f"Подписка активирована до *{new_expires.strftime('%d.%m.%Y')}*.\n\n"
-            f"🔑 Твой ключ продлён до *{new_key_expires.strftime('%d.%m.%Y')}*\n\n"
+            f"🔑 {keys_count} {keys_word} продлено до *{new_expires.strftime('%d.%m.%Y')}*\n\n"
             "Карта сохранена — следующее списание автоматически через 30 дней.\n"
             "Для отмены: /cancel"
         )
     else:
-        # Ключа нет — создаём новый
+        # Ключей нет — создаём новый
         label = f"sub_{user_name}_{user_id}"
         client_id, vless_link, error = xui_create_client(label, expires_ms)
 
