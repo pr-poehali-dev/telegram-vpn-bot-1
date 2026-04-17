@@ -136,10 +136,14 @@ def handler(event: dict, context) -> dict:
             WHERE status='active' AND expires_at < NOW() AND payment_method_id IS NULL"""
     )
 
-    # Уведомление за 1 день до окончания пробного ключа
+    # Уведомление за 1 день до окончания пробного ключа (только у кого нет активной подписки)
     cur.execute(
-        f"""SELECT DISTINCT user_id FROM {SCHEMA}.user_keys
-            WHERE expires_at BETWEEN NOW() + INTERVAL '23 hours' AND NOW() + INTERVAL '25 hours'"""
+        f"""SELECT DISTINCT uk.user_id FROM {SCHEMA}.user_keys uk
+            WHERE uk.expires_at BETWEEN NOW() + INTERVAL '23 hours' AND NOW() + INTERVAL '25 hours'
+            AND NOT EXISTS (
+                SELECT 1 FROM {SCHEMA}.subscriptions s
+                WHERE s.user_id = uk.user_id AND s.status = 'active'
+            )"""
     )
     trial_notified = 0
     for (user_id,) in cur.fetchall():
@@ -151,10 +155,14 @@ def handler(event: dict, context) -> dict:
         )
         trial_notified += 1
 
-    # Уведомление когда пробный ключ только что истёк (в течение последнего часа)
+    # Уведомление когда пробный ключ только что истёк (только у кого нет активной подписки)
     cur.execute(
-        f"""SELECT DISTINCT user_id FROM {SCHEMA}.user_keys
-            WHERE expires_at BETWEEN NOW() - INTERVAL '1 hour' AND NOW()"""
+        f"""SELECT DISTINCT uk.user_id FROM {SCHEMA}.user_keys uk
+            WHERE uk.expires_at BETWEEN NOW() - INTERVAL '1 hour' AND NOW()
+            AND NOT EXISTS (
+                SELECT 1 FROM {SCHEMA}.subscriptions s
+                WHERE s.user_id = uk.user_id AND s.status = 'active'
+            )"""
     )
     trial_expired = 0
     for (user_id,) in cur.fetchall():
@@ -166,6 +174,30 @@ def handler(event: dict, context) -> dict:
             "Оформить прямо сейчас → /start"
         )
         trial_expired += 1
+
+    # Напоминание об оплате каждые 3 дня для отменённых/истёкших подписок без карты
+    cur.execute(
+        f"""SELECT DISTINCT s.user_id FROM {SCHEMA}.subscriptions s
+            WHERE s.status IN ('cancelled', 'expired')
+            AND s.expires_at < NOW()
+            AND s.payment_method_id IS NULL
+            AND EXTRACT(EPOCH FROM (NOW() - s.expires_at)) / 86400 > 0
+            AND MOD(CAST(EXTRACT(EPOCH FROM (NOW() - s.expires_at)) / 86400 AS INTEGER), 3) = 0
+            AND EXTRACT(HOUR FROM NOW()) BETWEEN 10 AND 11
+            AND NOT EXISTS (
+                SELECT 1 FROM {SCHEMA}.subscriptions s2
+                WHERE s2.user_id = s.user_id AND s2.status = 'active'
+            )"""
+    )
+    sub_reminded = 0
+    for (user_id,) in cur.fetchall():
+        send_message(user_id,
+            "💳 *Подписка не активна*\n\n"
+            "Твоя подписка RossoVPN истекла — VPN не работает.\n\n"
+            "Оформи снова за *199 ₽/месяц*:\n"
+            "/start → 💳 Оформить подписку"
+        )
+        sub_reminded += 1
 
     # Удаление пробных ключей через 5 дней после истечения (если нет активной подписки)
     cur.execute(
@@ -198,5 +230,5 @@ def handler(event: dict, context) -> dict:
     return {
         "statusCode": 200,
         "headers": headers,
-        "body": json.dumps({"ok": True, "charged": charged, "failed": failed, "trial_notified": trial_notified, "trial_expired": trial_expired, "deleted": deleted})
+        "body": json.dumps({"ok": True, "charged": charged, "failed": failed, "trial_notified": trial_notified, "trial_expired": trial_expired, "deleted": deleted, "sub_reminded": sub_reminded})
     }
