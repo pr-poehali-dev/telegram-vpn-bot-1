@@ -151,7 +151,7 @@ def handler(event: dict, context) -> dict:
         for key_id, old_client_id, key_name, expires_at in keys:
             expires_ms = int(expires_at.timestamp() * 1000) if expires_at else 0
 
-            label = f"sub_{user_id}_{key_id}"
+            label = f"sub_{user_id}_{key_id}_{str(uuid.uuid4())[:6]}"
             new_client_id, new_vless_link, error = xui_create_client(session, label, expires_ms)
 
             if error:
