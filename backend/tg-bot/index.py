@@ -493,6 +493,7 @@ def send_key_detail(chat_id, message_id, key: dict):
     )
     keyboard = {
         "inline_keyboard": [
+            [{"text": "📖 Инструкция по подключению", "callback_data": f"instruction_{key['id']}"}],
             [{"text": "🗑 Удалить этот ключ", "callback_data": f"del_{key['id']}"}],
             [{"text": "◀️ К списку ключей", "callback_data": "my_keys"}],
         ]
@@ -745,6 +746,28 @@ def handle_update(update: dict):
             set_step(user_id, "creating_key")
             keyboard = {"inline_keyboard": [[{"text": "◀️ Отмена", "callback_data": "main_menu"}]]}
             edit_message(chat_id, message_id, "✏️ Старый ключ удалён. Введи название для нового ключа (например: *Телефон*, *Ноутбук*):", reply_markup=keyboard)
+
+        elif data.startswith("instruction_"):
+            key_id = int(data.split("_", 1)[1])
+            instruction_text = (
+                "📖 *Как подключиться к VPN*\n\n"
+                "Тебе нужно приложение *v2rayNG* (Android) или *Streisand* (iPhone).\n\n"
+                "📱 *Скачать приложение:*\n"
+                "• Android: [v2rayNG в Google Play](https://play.google.com/store/apps/details?id=com.v2ray.ang)\n"
+                "• iPhone: [Streisand в App Store](https://apps.apple.com/app/streisand/id6450534064)\n\n"
+                "⚙️ *Как добавить ключ:*\n"
+                "1. Открой приложение\n"
+                "2. Нажми *+* (плюс) в правом верхнем углу\n"
+                "3. Выбери *«Импорт из буфера обмена»*\n"
+                "4. Вставь скопированный ключ — он добавится автоматически\n"
+                "5. Нажми кнопку подключения\n\n"
+                "✅ Готово! VPN включён.\n\n"
+                "❓ Если что-то не получается — пиши @btb75"
+            )
+            keyboard = {"inline_keyboard": [
+                [{"text": "◀️ Назад к ключу", "callback_data": f"key_{key_id}"}],
+            ]}
+            edit_message(chat_id, message_id, instruction_text, reply_markup=keyboard)
 
         elif data.startswith("key_"):
             key_id = int(data.split("_", 1)[1])
