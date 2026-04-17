@@ -925,10 +925,45 @@ def handle_update(update: dict):
         upsert_user(user_id, "menu", "", tg_username, tg_first_name)
         send_message(chat_id, "⏳ Создаю ключ, подождите...")
 
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
         user_name = get_user(user_id).get("name", "user")
         full_label = f"{user_name}_{label}_{user_id}"
-        expires_dt = datetime.utcnow() + timedelta(days=7)
+
+        # Определяем дату истечения: берём из подписки или из существующих ключей
+        expires_dt = None
+        expires_label = "до конца подписки"
+        conn = get_db()
+        try:
+            cur = conn.cursor()
+            # Проверяем активную подписку
+            cur.execute(f"SELECT status, expires_at FROM {DB_SCHEMA}.subscriptions WHERE user_id={user_id} ORDER BY id DESC LIMIT 1")
+            sub = cur.fetchone()
+            if sub and sub[0] == "active" and sub[1]:
+                expires_dt = sub[1]
+                if expires_dt.tzinfo is None:
+                    expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+                expires_label = f"до {expires_dt.strftime('%d.%m.%Y')} (по подписке)"
+            else:
+                # Берём max expires_at из существующих ключей (триал или старый ключ)
+                cur.execute(f"SELECT MAX(expires_at) FROM {DB_SCHEMA}.user_keys WHERE user_id={user_id}")
+                row = cur.fetchone()
+                if row and row[0]:
+                    expires_dt = row[0]
+                    if expires_dt.tzinfo is None:
+                        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+                    now_utc = datetime.now(timezone.utc)
+                    if expires_dt > now_utc:
+                        expires_label = f"до {expires_dt.strftime('%d.%m.%Y')} (остаток триала)"
+                    else:
+                        expires_dt = None
+        finally:
+            conn.close()
+
+        # Если нет ни подписки, ни действующего ключа — даём 7 дней (первый ключ)
+        if not expires_dt:
+            expires_dt = datetime.now(timezone.utc) + timedelta(days=7)
+            expires_label = "7 дней"
+
         expires_ms = int(expires_dt.timestamp() * 1000)
 
         client_id, vless_link, error = xui_create_client(full_label, expires_ms)
@@ -941,7 +976,7 @@ def handle_update(update: dict):
 
         text_out = (
             f"✅ *Ключ «{label}» создан!*\n\n"
-            f"⏳ Действует: *7 дней*\n\n"
+            f"⏳ Действует: *{expires_label}*\n\n"
             f"🔑 Твой VLESS ключ:\n\n"
             f"`{vless_link}`\n\n"
             f"Скопируй и вставь в приложение для подключения."
