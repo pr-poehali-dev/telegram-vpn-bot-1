@@ -6,6 +6,7 @@ Telegram VPN бот с личным кабинетом. Сервер: 149.33.0.2
 import os
 import json
 import uuid
+import logging
 import requests
 import psycopg2
 
