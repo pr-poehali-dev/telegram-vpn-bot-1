@@ -402,6 +402,7 @@ def send_admin_menu(chat_id, message_id=None, edit=False):
         lines.append(f"👤 {name} ({tg})\n   {sub_str} | {key_str}")
         rows.append([{"text": f"🗑 Удалить {name} ({tg})", "callback_data": f"admin_del_{u['user_id']}"}])
 
+    rows.append([{"text": "🔑 Перевыпустить все ключи", "callback_data": "admin_reissue_keys"}])
     rows.append([{"text": "🔄 Обновить", "callback_data": "admin_panel"}])
     rows.append([{"text": "◀️ Главное меню", "callback_data": "main_menu"}])
     keyboard = {"inline_keyboard": rows}
@@ -821,6 +822,67 @@ def handle_update(update: dict):
             admin_delete_user(target_id)
             answer_callback(callback["id"], "✅ Пользователь удалён", show_alert=True)
             send_admin_menu(chat_id, message_id, edit=True)
+
+        elif data == "admin_reissue_keys":
+            if callback["from"].get("username") not in ADMIN_USERNAMES:
+                answer_callback(callback["id"], "Доступ запрещён", show_alert=True)
+                return
+            answer_callback(callback["id"])
+            keyboard = {"inline_keyboard": [
+                [{"text": "✅ Да, перевыпустить всем", "callback_data": "admin_confirm_reissue"}],
+                [{"text": "◀️ Отмена", "callback_data": "admin_panel"}],
+            ]}
+            edit_message(
+                chat_id, message_id,
+                "⚠️ *Перевыпуск всех ключей*\n\n"
+                "Все пользователи получат новые ключи — старые перестанут работать.\n"
+                "Каждому придёт уведомление с инструкцией.\n\n"
+                "Сроки подписок сохранятся.\n\n"
+                "Это действие нельзя отменить. Продолжить?",
+                reply_markup=keyboard
+            )
+
+        elif data == "admin_confirm_reissue":
+            if callback["from"].get("username") not in ADMIN_USERNAMES:
+                answer_callback(callback["id"], "Доступ запрещён", show_alert=True)
+                return
+            answer_callback(callback["id"])
+            edit_message(chat_id, message_id, "⏳ Перевыпускаю ключи... Это может занять минуту.", parse_mode=None)
+            func2url = {}
+            try:
+                import json as _json
+                with open("func2url.json") as f:
+                    func2url = _json.load(f)
+            except Exception:
+                pass
+            reissue_url = func2url.get("reissue-all-keys", "")
+            admin_token = os.environ.get("ADMIN_SECRET_TOKEN", "")
+            if reissue_url:
+                resp = requests.post(
+                    reissue_url,
+                    json={"admin_token": admin_token},
+                    timeout=120
+                )
+                if resp.status_code == 200:
+                    result = resp.json()
+                    success = result.get("success", 0)
+                    failed = result.get("failed", 0)
+                    total = result.get("users_processed", 0)
+                    edit_message(
+                        chat_id, message_id,
+                        f"✅ *Перевыпуск завершён*\n\n"
+                        f"👥 Обработано пользователей: {total}\n"
+                        f"✔️ Успешно: {success}\n"
+                        f"❌ Ошибок: {failed}\n\n"
+                        f"Всем пользователям отправлены уведомления.",
+                        reply_markup={"inline_keyboard": [[{"text": "◀️ В админ-панель", "callback_data": "admin_panel"}]]}
+                    )
+                else:
+                    edit_message(chat_id, message_id, f"❌ Ошибка запроса: {resp.status_code}", parse_mode=None,
+                                 reply_markup={"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "admin_panel"}]]})
+            else:
+                edit_message(chat_id, message_id, "❌ URL функции не найден. Проверь деплой reissue-all-keys.", parse_mode=None,
+                             reply_markup={"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "admin_panel"}]]})
 
         elif data.startswith("confirm_del_"):
             key_id = int(data.split("_", 2)[2])

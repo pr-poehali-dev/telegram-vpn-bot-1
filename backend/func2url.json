@@ -1,4 +1,5 @@
 {
+  "reissue-all-keys": "https://functions.poehali.dev/36ba2c59-67ea-4253-87e4-249877b875c4",
   "yukassa-webhook": "https://functions.poehali.dev/19feb0bc-c703-443a-a0a5-b73c0050ccec",
   "yukassa-billing": "https://functions.poehali.dev/fcc84b2e-dc16-4bf0-abb0-fedbd8c4d8af",
   "tg-bot": "https://functions.poehali.dev/f4468fd0-9889-4154-9f16-87b42de41ea0"
