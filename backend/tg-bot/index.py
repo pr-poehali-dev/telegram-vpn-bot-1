@@ -172,7 +172,11 @@ def edit_message(chat_id, message_id, text, reply_markup=None, parse_mode="Markd
     payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": parse_mode}
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
-    requests.post(f"{TELEGRAM_API}/editMessageText", json=payload, timeout=10)
+    r = requests.post(f"{TELEGRAM_API}/editMessageText", json=payload, timeout=10)
+    if not r.ok:
+        err = r.json().get("description", "")
+        if "message is not modified" not in err:
+            logging.warning(f"[edit_message] error: {err}")
 
 
 def answer_callback(callback_id, text=None, show_alert=False):
@@ -760,6 +764,7 @@ def handle_update(update: dict):
             if callback["from"].get("username") not in ADMIN_USERNAMES:
                 answer_callback(callback["id"], "Доступ запрещён", show_alert=True)
                 return
+            answer_callback(callback["id"])
             send_admin_menu(chat_id, message_id, edit=True)
 
         elif data.startswith("admin_del_"):
