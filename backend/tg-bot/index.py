@@ -848,14 +848,7 @@ def handle_update(update: dict):
                 return
             answer_callback(callback["id"])
             edit_message(chat_id, message_id, "⏳ Перевыпускаю ключи... Это может занять минуту.", parse_mode=None)
-            func2url = {}
-            try:
-                import json as _json
-                with open("func2url.json") as f:
-                    func2url = _json.load(f)
-            except Exception:
-                pass
-            reissue_url = func2url.get("reissue-all-keys", "")
+            reissue_url = "https://functions.poehali.dev/36ba2c59-67ea-4253-87e4-249877b875c4"
             admin_token = os.environ.get("ADMIN_SECRET_TOKEN", "")
             if reissue_url:
                 resp = requests.post(
