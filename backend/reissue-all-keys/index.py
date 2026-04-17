@@ -18,7 +18,6 @@ XUI_USERNAME = os.environ['XUI_USERNAME']
 XUI_PASSWORD = os.environ['XUI_PASSWORD']
 INBOUND_ID = 1
 DB_SCHEMA = os.environ.get('MAIN_DB_SCHEMA', 't_p89198250_telegram_vpn_bot_1')
-ADMIN_USERNAMES = {'btb75', 'makarevichas'}
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
@@ -39,6 +38,31 @@ def xui_login():
     return session
 
 
+def xui_get_inbound_params(session) -> dict:
+    """Получает параметры inbound один раз для построения ссылок."""
+    resp = session.get(
+        f"{XUI_URL}/panel/api/inbounds/get/{INBOUND_ID}",
+        allow_redirects=True,
+        timeout=10
+    )
+    if resp.status_code != 200 or not resp.json().get("success"):
+        return {}
+    inbound = resp.json().get("obj", {})
+    stream_settings = json.loads(inbound.get("streamSettings", "{}"))
+    reality_settings = stream_settings.get("realitySettings", {})
+    server_names = reality_settings.get("serverNames", [""])
+    public_key = reality_settings.get("settings", {}).get("publicKey", "")
+    short_ids = reality_settings.get("shortIds", [""])
+    host = XUI_URL.replace("http://", "").replace("https://", "").split(":")[0]
+    return {
+        "host": host,
+        "port": inbound.get("port", 443),
+        "public_key": public_key,
+        "sni": server_names[0] if server_names else "",
+        "short_id": short_ids[0] if short_ids else "",
+    }
+
+
 def xui_delete_client(session, client_id: str):
     resp = session.post(
         f"{XUI_URL}/panel/api/inbounds/{INBOUND_ID}/delClient/{client_id}",
@@ -49,7 +73,8 @@ def xui_delete_client(session, client_id: str):
     return resp.status_code == 200 and resp.json().get("success")
 
 
-def xui_create_client(session, label: str, expires_ms: int) -> tuple:
+def xui_add_client(session, label: str, expires_ms: int) -> tuple:
+    """Добавляет клиента в XUI, возвращает (client_id, error)."""
     client_id = str(uuid.uuid4())
     client = {
         "id": client_id,
@@ -71,35 +96,17 @@ def xui_create_client(session, label: str, expires_ms: int) -> tuple:
     )
     print(f"[addClient] {label} status={resp.status_code} body={resp.text[:200]}")
     if resp.status_code != 200 or not resp.json().get("success"):
-        return None, None, resp.text
+        return None, resp.text
+    return client_id, None
 
-    inbound_resp = session.get(
-        f"{XUI_URL}/panel/api/inbounds/get/{INBOUND_ID}",
-        allow_redirects=True,
-        timeout=10
-    )
-    if inbound_resp.status_code != 200 or not inbound_resp.json().get("success"):
-        return None, None, "Не удалось получить данные inbound"
 
-    inbound = inbound_resp.json().get("obj", {})
-    stream_settings = json.loads(inbound.get("streamSettings", "{}"))
-    reality_settings = stream_settings.get("realitySettings", {})
-    server_names = reality_settings.get("serverNames", [""])
-    public_key = reality_settings.get("settings", {}).get("publicKey", "")
-    short_ids = reality_settings.get("shortIds", [""])
-
-    host = XUI_URL.replace("http://", "").replace("https://", "").split(":")[0]
-    port = inbound.get("port", 443)
-    sni = server_names[0] if server_names else ""
-    short_id = short_ids[0] if short_ids else ""
-
-    vless_link = (
-        f"vless://{client_id}@{host}:{port}"
-        f"?type=tcp&security=reality&pbk={public_key}"
-        f"&fp=chrome&sni={sni}&sid={short_id}&spx=%2F&flow=xtls-rprx-vision"
+def build_vless_link(client_id: str, label: str, params: dict) -> str:
+    return (
+        f"vless://{client_id}@{params['host']}:{params['port']}"
+        f"?type=tcp&security=reality&pbk={params['public_key']}"
+        f"&fp=chrome&sni={params['sni']}&sid={params['short_id']}&spx=%2F&flow=xtls-rprx-vision"
         f"#{label}"
     )
-    return client_id, vless_link, None
 
 
 def send_telegram(chat_id, text):
@@ -138,6 +145,15 @@ def handler(event: dict, context) -> dict:
         conn.close()
         return {"statusCode": 500, "headers": headers, "body": json.dumps({"error": "XUI login failed"})}
 
+    # Получаем параметры inbound один раз
+    inbound_params = xui_get_inbound_params(session)
+    if not inbound_params:
+        cur.close()
+        conn.close()
+        return {"statusCode": 500, "headers": headers, "body": json.dumps({"error": "Failed to get inbound params"})}
+
+    print(f"[inbound] host={inbound_params['host']} port={inbound_params['port']} sni={inbound_params['sni']}")
+
     results = {"success": 0, "failed": 0, "users": []}
 
     for user_id in user_ids:
@@ -147,34 +163,36 @@ def handler(event: dict, context) -> dict:
         )
         keys = cur.fetchall()
         user_result = {"user_id": user_id, "keys_reissued": 0, "errors": []}
+        new_keys_for_msg = []
 
         for key_id, old_client_id, key_name, expires_at in keys:
             expires_ms = int(expires_at.timestamp() * 1000) if expires_at else 0
-
             label = f"sub_{user_id}_{key_id}_{str(uuid.uuid4())[:6]}"
-            new_client_id, new_vless_link, error = xui_create_client(session, label, expires_ms)
 
+            # Создаём нового клиента в XUI
+            new_client_id, error = xui_add_client(session, label, expires_ms)
             if error:
                 user_result["errors"].append(f"key {key_id}: {error}")
                 continue
 
+            # Строим vless ссылку из актуальных параметров inbound
+            new_vless_link = build_vless_link(new_client_id, label, inbound_params)
+
+            # Удаляем старого клиента из XUI
             xui_delete_client(session, old_client_id)
 
+            # Обновляем в БД
             cur.execute(
                 f"UPDATE {DB_SCHEMA}.user_keys SET client_id=%s, vless_link=%s WHERE id=%s",
                 (new_client_id, new_vless_link, key_id)
             )
             user_result["keys_reissued"] += 1
+            new_keys_for_msg.append((key_name, new_vless_link))
 
         conn.commit()
 
-        if user_result["keys_reissued"] > 0:
-            cur.execute(
-                f"SELECT name, vless_link FROM {DB_SCHEMA}.user_keys WHERE user_id=%s ORDER BY created_at DESC",
-                (user_id,)
-            )
-            new_keys = cur.fetchall()
-            keys_text = "\n\n".join([f"🔑 *{name}*:\n`{vless_link}`" for name, vless_link in new_keys])
+        if new_keys_for_msg:
+            keys_text = "\n\n".join([f"🔑 *{name}*:\n`{vless_link}`" for name, vless_link in new_keys_for_msg])
             send_telegram(
                 user_id,
                 "🔄 *Обновление сервера*\n\n"
