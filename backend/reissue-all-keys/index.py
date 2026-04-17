@@ -158,6 +158,13 @@ def handler(event: dict, context) -> dict:
 
     for user_id in user_ids:
         cur.execute(
+            f"SELECT name FROM {DB_SCHEMA}.user_states WHERE user_id=%s",
+            (user_id,)
+        )
+        row = cur.fetchone()
+        user_name = (row[0] or "user").strip().replace(" ", "_") if row else "user"
+
+        cur.execute(
             f"SELECT id, client_id, name, expires_at FROM {DB_SCHEMA}.user_keys WHERE user_id=%s",
             (user_id,)
         )
@@ -167,7 +174,7 @@ def handler(event: dict, context) -> dict:
 
         for key_id, old_client_id, key_name, expires_at in keys:
             expires_ms = int(expires_at.timestamp() * 1000) if expires_at else 0
-            label = f"sub_{user_id}_{key_id}_{str(uuid.uuid4())[:6]}"
+            label = f"{user_name}_{user_id}"
 
             # Создаём нового клиента в XUI
             new_client_id, error = xui_add_client(session, label, expires_ms)
