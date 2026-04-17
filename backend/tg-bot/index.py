@@ -349,7 +349,8 @@ def send_admin_menu(chat_id, message_id=None, edit=False):
     rows = []
     now = datetime.now(timezone.utc)
     for u in users:
-        name = u["name"] or "—"
+        raw_name = u["name"] or "—"
+        name = raw_name.replace("*", "").replace("_", "").replace("`", "").replace("[", "")
         tg = f"@{u['tg_username']}" if u["tg_username"] else "без username"
 
         # Подписка
