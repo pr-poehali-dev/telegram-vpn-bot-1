@@ -169,17 +169,21 @@ def handler(event: dict, context) -> dict:
         conn.commit()
 
         if user_result["keys_reissued"] > 0:
-            keys_word = "ключ" if user_result["keys_reissued"] == 1 else ("ключа" if user_result["keys_reissued"] < 5 else "ключей")
+            cur.execute(
+                f"SELECT name, vless_link FROM {DB_SCHEMA}.user_keys WHERE user_id=%s ORDER BY created_at DESC",
+                (user_id,)
+            )
+            new_keys = cur.fetchall()
+            keys_text = "\n\n".join([f"🔑 *{name}*:\n`{vless_link}`" for name, vless_link in new_keys])
             send_telegram(
                 user_id,
                 "🔄 *Обновление сервера*\n\n"
-                "Мы модернизировали техническую базу и улучшили соединение.\n\n"
-                f"Тебе выпущен новый ключ — старый больше не работает.\n\n"
+                "Мы улучшили соединение — твой ключ обновлён автоматически.\n\n"
+                f"{keys_text}\n\n"
                 "📲 *Что нужно сделать:*\n"
-                "1. Открой бот и нажми *«Мои ключи»*\n"
-                "2. Скопируй новый ключ\n"
-                "3. Удали старый из приложения и добавь новый\n\n"
-                "Если что-то непонятно — нажми кнопку *«Инструкция»* рядом с ключом.\n\n"
+                "1. Скопируй новый ключ выше\n"
+                "2. Удали старый из приложения\n"
+                "3. Вставь новый и переподключись\n\n"
                 "Приносим извинения за неудобства 🙏"
             )
             results["success"] += 1
