@@ -163,14 +163,18 @@ def delete_key_by_id(key_id: int, user_id: int) -> dict | None:
 # ── Telegram ─────────────────────────────────────────────────────────────────
 
 def send_message(chat_id, text, reply_markup=None, parse_mode="Markdown"):
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     requests.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=10)
 
 
 def edit_message(chat_id, message_id, text, reply_markup=None, parse_mode="Markdown"):
-    payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": parse_mode}
+    payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     r = requests.post(f"{TELEGRAM_API}/editMessageText", json=payload, timeout=10)
@@ -345,12 +349,11 @@ def send_admin_menu(chat_id, message_id=None, edit=False):
     from datetime import datetime, timezone
     total = admin_get_users_count()
     users = admin_get_users(limit=10)
-    lines = [f"🛠 *Админ-панель RossoVPN*\n\nВсего пользователей: *{total}*\n"]
+    lines = [f"🛠 Админ-панель RossoVPN\n\nВсего пользователей: {total}\n"]
     rows = []
     now = datetime.now(timezone.utc)
     for u in users:
-        raw_name = u["name"] or "—"
-        name = raw_name.replace("*", "").replace("_", "").replace("`", "").replace("[", "")
+        name = u["name"] or "—"
         tg = f"@{u['tg_username']}" if u["tg_username"] else "без username"
 
         # Подписка
@@ -396,7 +399,7 @@ def send_admin_menu(chat_id, message_id=None, edit=False):
         else:
             key_str = "🔑 нет ключа"
 
-        lines.append(f"👤 *{name}* ({tg})\n   {sub_str} | {key_str}")
+        lines.append(f"👤 {name} ({tg})\n   {sub_str} | {key_str}")
         rows.append([{"text": f"🗑 Удалить {name} ({tg})", "callback_data": f"admin_del_{u['user_id']}"}])
 
     rows.append([{"text": "🔄 Обновить", "callback_data": "admin_panel"}])
@@ -404,9 +407,9 @@ def send_admin_menu(chat_id, message_id=None, edit=False):
     keyboard = {"inline_keyboard": rows}
     text = "\n".join(lines)
     if edit and message_id:
-        edit_message(chat_id, message_id, text, reply_markup=keyboard)
+        edit_message(chat_id, message_id, text, reply_markup=keyboard, parse_mode=None)
     else:
-        send_message(chat_id, text, reply_markup=keyboard)
+        send_message(chat_id, text, reply_markup=keyboard, parse_mode=None)
 
 
 # ── Меню ─────────────────────────────────────────────────────────────────────
