@@ -174,7 +174,7 @@ def handler(event: dict, context) -> dict:
 
         for key_id, old_client_id, key_name, expires_at in keys:
             expires_ms = int(expires_at.timestamp() * 1000) if expires_at else 0
-            label = f"user_{user_id}"
+            label = f"u{user_id}_{str(uuid.uuid4())[:8]}"
 
             # Сначала удаляем старого клиента из XUI (чтобы не было Duplicate email)
             xui_delete_client(session, old_client_id)
