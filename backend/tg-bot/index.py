@@ -11,8 +11,7 @@ import requests
 import psycopg2
 
 BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
-_raw_url = os.environ['XUI_URL'].rstrip('/').replace('https://', 'http://')
-XUI_URL = _raw_url
+XUI_URL = os.environ['XUI_URL'].rstrip('/')
 XUI_USERNAME = os.environ['XUI_USERNAME']
 XUI_PASSWORD = os.environ['XUI_PASSWORD']
 INBOUND_ID = 1
@@ -196,6 +195,7 @@ def answer_callback(callback_id, text=None, show_alert=False):
 
 def xui_login():
     session = requests.Session()
+    session.verify = False
     resp = session.post(
         f"{XUI_URL}/login",
         data={"username": XUI_USERNAME, "password": XUI_PASSWORD},
