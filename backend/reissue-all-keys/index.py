@@ -104,7 +104,7 @@ def build_vless_link(client_id: str, label: str, params: dict) -> str:
     return (
         f"vless://{client_id}@{params['host']}:{params['port']}"
         f"?type=tcp&security=reality&pbk={params['public_key']}"
-        f"&fp=android&sni={params['sni']}&sid={params['short_id']}&spx=%2F&flow=xtls-rprx-vision"
+        f"&fp=chrome&sni={params['sni']}&sid={params['short_id']}&spx=%2F&flow=xtls-rprx-vision"
         f"#{label}"
     )
 
