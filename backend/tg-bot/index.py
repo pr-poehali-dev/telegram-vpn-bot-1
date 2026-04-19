@@ -523,8 +523,7 @@ def handle_update(update: dict):
                 answer_callback(callback["id"], "Пробный ключ уже был использован", show_alert=True)
             else:
                 send_message(chat_id, "⏳ Создаю пробный ключ на 7 дней, подождите...")
-                user_name = user.get("name", "user")
-                full_label = f"trial_{user_name}_{user_id}"
+                full_label = f"trial_{user_id}"
                 import time
                 from datetime import datetime, timedelta
                 expires_dt = datetime.utcnow() + timedelta(days=7)
@@ -1004,8 +1003,7 @@ def handle_update(update: dict):
         send_message(chat_id, "⏳ Создаю ключ, подождите...")
 
         from datetime import datetime, timedelta, timezone
-        user_name = get_user(user_id).get("name", "user")
-        full_label = f"{user_name}_{label}_{user_id}"
+        full_label = f"user_{user_id}"
 
         # Определяем дату истечения: берём из подписки или из существующих ключей
         expires_dt = None
