@@ -265,7 +265,7 @@ def xui_create_client(label: str, expires_ms: int = 0) -> tuple:
     vless_link = (
         f"vless://{client_id}@{host}:{port}"
         f"?type=tcp&security=reality&pbk={public_key}"
-        f"&fp=chrome&sni={sni}&sid={short_id}&spx=%2F&flow=xtls-rprx-vision"
+        f"&fp=android&sni={sni}&sid={short_id}&spx=%2F&flow=xtls-rprx-vision"
         f"#{label}"
     )
 
