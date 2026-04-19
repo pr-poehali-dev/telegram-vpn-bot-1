@@ -295,6 +295,33 @@ def xui_delete_client(client_id: str) -> str | None:
     return None
 
 
+def xui_delete_all_user_clients(session, user_id: int):
+    """Удаляет все клиенты пользователя из панели по префиксу u{user_id}_."""
+    resp = session.get(
+        f"{XUI_URL}/panel/api/inbounds/get/{INBOUND_ID}",
+        allow_redirects=True,
+        timeout=10
+    )
+    if resp.status_code != 200 or not resp.json().get("success"):
+        print(f"[deleteAllUserClients] Не удалось получить inbound")
+        return
+    inbound = resp.json().get("obj", {})
+    clients = json.loads(inbound.get("settings", "{}")).get("clients", [])
+    prefix = f"u{user_id}_"
+    uid_str = str(user_id)
+    for client in clients:
+        email = client.get("email", "")
+        if email.startswith(prefix) or uid_str in email:
+            cid = client.get("id")
+            if cid:
+                session.post(
+                    f"{XUI_URL}/panel/api/inbounds/{INBOUND_ID}/delClient/{cid}",
+                    allow_redirects=True,
+                    timeout=10
+                )
+                print(f"[deleteAllUserClients] deleted {email} ({cid})")
+
+
 # ── Админ БД ─────────────────────────────────────────────────────────────────
 
 def admin_get_users(limit: int = 20, offset: int = 0) -> list:
@@ -741,7 +768,10 @@ def handle_update(update: dict):
         elif data.startswith("replace_key_"):
             old_id = int(data.split("_", 2)[2])
             key_info = delete_key_by_id(old_id, user_id)
-            if key_info:
+            session = xui_login()
+            if session:
+                xui_delete_all_user_clients(session, user_id)
+            elif key_info:
                 xui_delete_client(key_info["client_id"])
             set_step(user_id, "creating_key")
             keyboard = {"inline_keyboard": [[{"text": "◀️ Отмена", "callback_data": "main_menu"}]]}
