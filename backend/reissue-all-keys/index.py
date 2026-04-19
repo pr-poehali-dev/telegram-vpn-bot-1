@@ -174,7 +174,10 @@ def handler(event: dict, context) -> dict:
 
         for key_id, old_client_id, key_name, expires_at in keys:
             expires_ms = int(expires_at.timestamp() * 1000) if expires_at else 0
-            label = f"{user_name}_{user_id}"
+            label = f"user_{user_id}"
+
+            # Сначала удаляем старого клиента из XUI (чтобы не было Duplicate email)
+            xui_delete_client(session, old_client_id)
 
             # Создаём нового клиента в XUI
             new_client_id, error = xui_add_client(session, label, expires_ms)
@@ -184,9 +187,6 @@ def handler(event: dict, context) -> dict:
 
             # Строим vless ссылку из актуальных параметров inbound
             new_vless_link = build_vless_link(new_client_id, label, inbound_params)
-
-            # Удаляем старого клиента из XUI
-            xui_delete_client(session, old_client_id)
 
             # Обновляем в БД
             cur.execute(
