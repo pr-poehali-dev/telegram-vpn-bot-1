@@ -1,6 +1,6 @@
 """
-Telegram VPN бот с личным кабинетом. Сервер: 149.33.0.210 (https)
-Сценарий: /start → регистрация имени (один раз) → главное меню (профиль, ключи, создать, удалить).
+Telegram VPN бот RossoVPN на базе Marzban.
+1 ключ на пользователя. Триал 7 дней. Подписка 199 руб/мес через ЮКасса.
 """
 
 import os
@@ -9,50 +9,131 @@ import uuid
 import logging
 import requests
 import psycopg2
+from datetime import datetime, timedelta, timezone
 
 BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
-XUI_URL = os.environ['XUI_URL'].rstrip('/')
-XUI_USERNAME = os.environ['XUI_USERNAME']
-XUI_PASSWORD = os.environ['XUI_PASSWORD']
-INBOUND_ID = 1
+MARZBAN_URL = os.environ['MARZBAN_URL'].rstrip('/')
+MARZBAN_USERNAME = os.environ['MARZBAN_USERNAME']
+MARZBAN_PASSWORD = os.environ['MARZBAN_PASSWORD']
 DB_SCHEMA = os.environ.get('MAIN_DB_SCHEMA', 't_p89198250_telegram_vpn_bot_1')
-ADMIN_USERNAMES = {'btb75', 'makarevichas'}  # admins
+ADMIN_USERNAMES = {'btb75', 'makarevichas'}
 YUKASSA_SHOP_ID = os.environ.get('YUKASSA_SHOP_ID', '1327149')
 YUKASSA_API_KEY = os.environ.get('YUKASSA_API_KEY', '')
 
-print(f"[init] XUI_URL={XUI_URL}")
-
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+# ── Marzban API ───────────────────────────────────────────────────────────────
 
-def setup_bot():
-    """Устанавливает имя, описание и команды бота при первом запуске."""
-    requests.post(f"{TELEGRAM_API}/setMyName", json={"name": "RossoVPN"}, timeout=10)
-    requests.post(f"{TELEGRAM_API}/setMyDescription", json={
-        "description": (
-            "🔒 RossoVPN — быстрый и надёжный VPN-сервис.\n\n"
-            "✅ Безлимитный трафик\n"
-            "✅ Высокая скорость\n"
-            "✅ 199 ₽/месяц\n\n"
-            "Поддержка: @btb75, @makarevichas"
+_marzban_token = None
+_marzban_token_expires = None
+
+
+def marzban_get_token() -> str | None:
+    global _marzban_token, _marzban_token_expires
+    now = datetime.now(timezone.utc)
+    if _marzban_token and _marzban_token_expires and now < _marzban_token_expires:
+        return _marzban_token
+    try:
+        resp = requests.post(
+            f"{MARZBAN_URL}/api/admin/token",
+            data={"username": MARZBAN_USERNAME, "password": MARZBAN_PASSWORD},
+            timeout=10
         )
-    }, timeout=10)
-    requests.post(f"{TELEGRAM_API}/setMyShortDescription", json={
-        "short_description": "Быстрый VPN — 199 ₽/месяц. Поддержка: @btb75"
-    }, timeout=10)
-    requests.post(f"{TELEGRAM_API}/setMyCommands", json={"commands": [
-        {"command": "start",   "description": "Личный кабинет"},
-        {"command": "offer",   "description": "Публичная оферта"},
-        {"command": "refund",  "description": "Условия возврата"},
-        {"command": "support", "description": "Связаться с поддержкой"},
-    ]}, timeout=10)
-    print("[setup_bot] done")
+        if resp.status_code == 200:
+            data = resp.json()
+            _marzban_token = data.get("access_token")
+            _marzban_token_expires = now + timedelta(minutes=50)
+            return _marzban_token
+        print(f"[marzban_get_token] error {resp.status_code}: {resp.text[:200]}")
+        return None
+    except Exception as e:
+        print(f"[marzban_get_token] exception: {e}")
+        return None
 
 
-setup_bot()
+def marzban_headers() -> dict:
+    token = marzban_get_token()
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
 
 
-# ── БД ──────────────────────────────────────────────────────────────────────
+def marzban_create_user(username: str, expires_at: datetime | None) -> tuple:
+    """Создаёт пользователя в Marzban. Возвращает (vless_link, error)."""
+    headers = marzban_headers()
+    if not headers:
+        return None, "Ошибка авторизации в Marzban"
+
+    expire_ts = int(expires_at.timestamp()) if expires_at else 0
+
+    payload = {
+        "username": username,
+        "proxies": {
+            "vless": {"flow": "xtls-rprx-vision"}
+        },
+        "inbounds": {
+            "vless": ["VLESS_TCP_REALITY"]
+        },
+        "expire": expire_ts,
+        "data_limit": 0,
+        "data_limit_reset_strategy": "no_reset",
+        "status": "active"
+    }
+
+    resp = requests.post(
+        f"{MARZBAN_URL}/api/user",
+        json=payload,
+        headers=headers,
+        timeout=10
+    )
+    print(f"[marzban_create_user] status={resp.status_code} body={resp.text[:300]}")
+
+    if resp.status_code not in (200, 201):
+        return None, f"Ошибка создания ключа: {resp.status_code}"
+
+    data = resp.json()
+    links = data.get("links", [])
+    vless_link = next((l for l in links if l.startswith("vless://")), None)
+    if not vless_link:
+        sub_url = data.get("subscription_url", "")
+        return None, f"Ключ создан, но ссылка не получена. Subscription: {sub_url}"
+
+    return vless_link, None
+
+
+def marzban_delete_user(username: str) -> str | None:
+    """Удаляет пользователя из Marzban. None = успех, строка = ошибка."""
+    headers = marzban_headers()
+    if not headers:
+        return "Ошибка авторизации в Marzban"
+    resp = requests.delete(
+        f"{MARZBAN_URL}/api/user/{username}",
+        headers=headers,
+        timeout=10
+    )
+    print(f"[marzban_delete_user] status={resp.status_code}")
+    if resp.status_code in (200, 204, 404):
+        return None
+    return f"Ошибка удаления: {resp.status_code}"
+
+
+def marzban_update_expire(username: str, expires_at: datetime | None) -> bool:
+    """Обновляет срок действия пользователя в Marzban."""
+    headers = marzban_headers()
+    if not headers:
+        return False
+    expire_ts = int(expires_at.timestamp()) if expires_at else 0
+    resp = requests.put(
+        f"{MARZBAN_URL}/api/user/{username}",
+        json={"expire": expire_ts},
+        headers=headers,
+        timeout=10
+    )
+    print(f"[marzban_update_expire] status={resp.status_code}")
+    return resp.status_code == 200
+
+
+# ── БД ───────────────────────────────────────────────────────────────────────
 
 def get_db():
     return psycopg2.connect(os.environ['DATABASE_URL'])
@@ -63,11 +144,13 @@ def get_user(user_id: int) -> dict:
     try:
         cur = conn.cursor()
         cur.execute(
-            f"SELECT step, name, tg_username, tg_first_name, trial_used FROM {DB_SCHEMA}.user_states WHERE user_id = {user_id}"
+            f"SELECT step, name, tg_username, tg_first_name, trial_used "
+            f"FROM {DB_SCHEMA}.user_states WHERE user_id = {user_id}"
         )
         row = cur.fetchone()
         if row:
-            return {"step": row[0], "name": row[1], "tg_username": row[2], "tg_first_name": row[3], "trial_used": row[4]}
+            return {"step": row[0], "name": row[1], "tg_username": row[2],
+                    "tg_first_name": row[3], "trial_used": row[4]}
         return {}
     finally:
         conn.close()
@@ -107,59 +190,84 @@ def set_step(user_id: int, step: str):
         conn.close()
 
 
-def save_key(user_id: int, client_id: str, name: str, vless_link: str, expires_at=None):
+def set_trial_used(user_id: int):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE {DB_SCHEMA}.user_states SET trial_used=TRUE WHERE user_id={user_id}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def save_key(user_id: int, marzban_username: str, name: str, vless_link: str, expires_at=None):
     conn = get_db()
     try:
         cur = conn.cursor()
         name_s = name.replace("'", "''")
         link_s = vless_link.replace("'", "''")
-        cid_s = client_id.replace("'", "''")
+        marz_s = marzban_username.replace("'", "''")
         if expires_at:
             cur.execute(f"""
-                INSERT INTO {DB_SCHEMA}.user_keys (user_id, client_id, name, vless_link, created_at, expires_at)
-                VALUES ({user_id}, '{cid_s}', '{name_s}', '{link_s}', NOW(), '{expires_at}')
+                INSERT INTO {DB_SCHEMA}.user_keys (user_id, marzban_username, client_id, name, vless_link, created_at, expires_at)
+                VALUES ({user_id}, '{marz_s}', '{marz_s}', '{name_s}', '{link_s}', NOW(), '{expires_at}')
             """)
         else:
             cur.execute(f"""
-                INSERT INTO {DB_SCHEMA}.user_keys (user_id, client_id, name, vless_link, created_at)
-                VALUES ({user_id}, '{cid_s}', '{name_s}', '{link_s}', NOW())
+                INSERT INTO {DB_SCHEMA}.user_keys (user_id, marzban_username, client_id, name, vless_link, created_at)
+                VALUES ({user_id}, '{marz_s}', '{marz_s}', '{name_s}', '{link_s}', NOW())
             """)
         conn.commit()
     finally:
         conn.close()
 
 
-def get_keys(user_id: int) -> list:
+def get_key(user_id: int) -> dict | None:
     conn = get_db()
     try:
         cur = conn.cursor()
         cur.execute(
-            f"SELECT id, client_id, name, vless_link, created_at, expires_at FROM {DB_SCHEMA}.user_keys WHERE user_id = {user_id} ORDER BY created_at DESC"
-        )
-        rows = cur.fetchall()
-        return [{"id": r[0], "client_id": r[1], "name": r[2], "vless_link": r[3], "created_at": r[4], "expires_at": r[5]} for r in rows]
-    finally:
-        conn.close()
-
-
-def delete_key_by_id(key_id: int, user_id: int) -> dict | None:
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT client_id, name FROM {DB_SCHEMA}.user_keys WHERE id = {key_id} AND user_id = {user_id}"
+            f"SELECT id, marzban_username, name, vless_link, created_at, expires_at "
+            f"FROM {DB_SCHEMA}.user_keys WHERE user_id = {user_id} ORDER BY created_at DESC LIMIT 1"
         )
         row = cur.fetchone()
-        if not row:
-            return None
-        cur.execute(f"DELETE FROM {DB_SCHEMA}.user_keys WHERE id = {key_id}")
-        conn.commit()
-        return {"client_id": row[0], "name": row[1]}
+        if row:
+            return {"id": row[0], "marzban_username": row[1], "name": row[2],
+                    "vless_link": row[3], "created_at": row[4], "expires_at": row[5]}
+        return None
     finally:
         conn.close()
 
 
-# ── Telegram ─────────────────────────────────────────────────────────────────
+def update_key_expires(user_id: int, expires_at):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"UPDATE {DB_SCHEMA}.user_keys SET expires_at = '{expires_at}' WHERE user_id = {user_id}"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_subscription(user_id: int) -> dict | None:
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT id, status, expires_at, payment_method_id "
+            f"FROM {DB_SCHEMA}.subscriptions WHERE user_id={user_id} ORDER BY id DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+        if row:
+            return {"id": row[0], "status": row[1], "expires_at": row[2], "payment_method_id": row[3]}
+        return None
+    finally:
+        conn.close()
+
+
+# ── Telegram ──────────────────────────────────────────────────────────────────
 
 def send_message(chat_id, text, reply_markup=None, parse_mode="Markdown"):
     payload = {"chat_id": chat_id, "text": text}
@@ -191,256 +299,7 @@ def answer_callback(callback_id, text=None, show_alert=False):
     requests.post(f"{TELEGRAM_API}/answerCallbackQuery", json=payload, timeout=5)
 
 
-# ── 3x-ui ─────────────────────────────────────────────────────────────────────
-
-def xui_login():
-    session = requests.Session()
-    session.verify = False
-    resp = session.post(
-        f"{XUI_URL}/login",
-        data={"username": XUI_USERNAME, "password": XUI_PASSWORD},
-        timeout=10
-    )
-    print(f"[xui_login] status={resp.status_code} body={resp.text[:200]}")
-    if resp.status_code == 200 and resp.json().get("success"):
-        return session
-    return None
-
-
-def xui_create_client(label: str, expires_ms: int = 0) -> tuple:
-    """Создаёт клиента в панели, возвращает (client_id, vless_link) или (None, error)."""
-    session = xui_login()
-    if not session:
-        return None, None, "Ошибка авторизации в панели 3x-ui"
-
-    client_id = str(uuid.uuid4())
-    client = {
-        "id": client_id,
-        "flow": "xtls-rprx-vision",
-        "email": label,
-        "limitIp": 1,
-        "totalGB": 0,
-        "expiryTime": expires_ms,
-        "enable": True,
-        "tgId": "",
-        "subId": str(uuid.uuid4())[:8],
-        "reset": 0
-    }
-
-    resp = session.post(
-        f"{XUI_URL}/panel/api/inbounds/addClient",
-        json={"id": INBOUND_ID, "settings": json.dumps({"clients": [client]})},
-        allow_redirects=True,
-        timeout=10
-    )
-    print(f"[addClient] status={resp.status_code} body={resp.text[:300]}")
-
-    if resp.status_code != 200:
-        return None, None, f"Ошибка API панели: {resp.status_code}"
-
-    data = resp.json()
-    if not data.get("success"):
-        return None, None, f"Панель вернула ошибку: {data.get('msg', '?')}"
-
-    inbound_resp = session.get(
-        f"{XUI_URL}/panel/api/inbounds/get/{INBOUND_ID}",
-        allow_redirects=True,
-        timeout=10
-    )
-    if inbound_resp.status_code != 200 or not inbound_resp.json().get("success"):
-        return None, None, "Не удалось получить данные inbound"
-
-    inbound = inbound_resp.json().get("obj", {})
-    stream_settings = json.loads(inbound.get("streamSettings", "{}"))
-    reality_settings = stream_settings.get("realitySettings", {})
-    server_names = reality_settings.get("serverNames", [""])
-    public_key = reality_settings.get("settings", {}).get("publicKey", "")
-    short_ids = reality_settings.get("shortIds", [""])
-
-    host = XUI_URL.replace("http://", "").replace("https://", "").split(":")[0]
-    port = inbound.get("port", 443)
-    sni = server_names[0] if server_names else ""
-    short_id = short_ids[0] if short_ids else ""
-
-    vless_link = (
-        f"vless://{client_id}@{host}:{port}"
-        f"?type=tcp&security=reality&pbk={public_key}"
-        f"&fp=chrome&sni={sni}&sid={short_id}&spx=%2F&flow=xtls-rprx-vision"
-        f"#{label}"
-    )
-
-    return client_id, vless_link, None
-
-
-def xui_delete_client(client_id: str) -> str | None:
-    """Удаляет клиента из панели. Возвращает None при успехе или строку с ошибкой."""
-    session = xui_login()
-    if not session:
-        return "Ошибка авторизации в панели"
-
-    resp = session.post(
-        f"{XUI_URL}/panel/api/inbounds/{INBOUND_ID}/delClient/{client_id}",
-        allow_redirects=True,
-        timeout=10
-    )
-    print(f"[delClient] status={resp.status_code} body={resp.text[:200]}")
-
-    if resp.status_code != 200:
-        return f"Ошибка API: {resp.status_code}"
-
-    data = resp.json()
-    if not data.get("success"):
-        return data.get("msg", "Ошибка удаления")
-
-    return None
-
-
-def xui_delete_all_user_clients(session, user_id: int):
-    """Удаляет все клиенты пользователя из панели по префиксу u{user_id}_."""
-    resp = session.get(
-        f"{XUI_URL}/panel/api/inbounds/get/{INBOUND_ID}",
-        allow_redirects=True,
-        timeout=10
-    )
-    if resp.status_code != 200 or not resp.json().get("success"):
-        print(f"[deleteAllUserClients] Не удалось получить inbound")
-        return
-    inbound = resp.json().get("obj", {})
-    clients = json.loads(inbound.get("settings", "{}")).get("clients", [])
-    prefix = f"u{user_id}_"
-    uid_str = str(user_id)
-    for client in clients:
-        email = client.get("email", "")
-        if email.startswith(prefix) or uid_str in email:
-            cid = client.get("id")
-            if cid:
-                session.post(
-                    f"{XUI_URL}/panel/api/inbounds/{INBOUND_ID}/delClient/{cid}",
-                    allow_redirects=True,
-                    timeout=10
-                )
-                print(f"[deleteAllUserClients] deleted {email} ({cid})")
-
-
-# ── Админ БД ─────────────────────────────────────────────────────────────────
-
-def admin_get_users(limit: int = 20, offset: int = 0) -> list:
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute(f"""
-            SELECT u.user_id, u.name, u.tg_username, u.trial_used, u.updated_at,
-                   COUNT(k.id) as keys_count,
-                   MAX(k.expires_at) as key_expires,
-                   s.status as sub_status,
-                   s.expires_at as sub_expires
-            FROM {DB_SCHEMA}.user_states u
-            LEFT JOIN {DB_SCHEMA}.user_keys k ON k.user_id = u.user_id
-            LEFT JOIN (
-                SELECT DISTINCT ON (user_id) user_id, status, expires_at
-                FROM {DB_SCHEMA}.subscriptions
-                ORDER BY user_id, id DESC
-            ) s ON s.user_id = u.user_id
-            GROUP BY u.user_id, u.name, u.tg_username, u.trial_used, u.updated_at, s.status, s.expires_at
-            ORDER BY u.updated_at DESC
-            LIMIT {limit} OFFSET {offset}
-        """)
-        rows = cur.fetchall()
-        return [{"user_id": r[0], "name": r[1], "tg_username": r[2], "trial_used": r[3], "updated_at": r[4], "keys_count": r[5], "key_expires": r[6], "sub_status": r[7], "sub_expires": r[8]} for r in rows]
-    finally:
-        conn.close()
-
-
-def admin_get_users_count() -> int:
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute(f"SELECT COUNT(*) FROM {DB_SCHEMA}.user_states")
-        return cur.fetchone()[0]
-    finally:
-        conn.close()
-
-
-def admin_delete_user(target_user_id: int):
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute(f"DELETE FROM {DB_SCHEMA}.user_keys WHERE user_id = {target_user_id}")
-        cur.execute(f"DELETE FROM {DB_SCHEMA}.user_states WHERE user_id = {target_user_id}")
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def send_admin_menu(chat_id, message_id=None, edit=False):
-    from datetime import datetime, timezone
-    total = admin_get_users_count()
-    users = admin_get_users(limit=10)
-    lines = [f"🛠 Админ-панель RossoVPN\n\nВсего пользователей: {total}\n"]
-    rows = []
-    now = datetime.now(timezone.utc)
-    for u in users:
-        name = u["name"] or "—"
-        tg = f"@{u['tg_username']}" if u["tg_username"] else "без username"
-
-        # Подписка
-        sub_status = u.get("sub_status")
-        sub_expires = u.get("sub_expires")
-        if sub_status == "active" and sub_expires:
-            if sub_expires.tzinfo is None:
-                sub_expires = sub_expires.replace(tzinfo=timezone.utc)
-            sub_str = f"💳 с {sub_expires.strftime('%d.%m.%Y')}"
-        elif sub_status in ("cancelled", "expired") and sub_expires:
-            if sub_expires.tzinfo is None:
-                sub_expires = sub_expires.replace(tzinfo=timezone.utc)
-            sub_str = f"🔕 истекла {sub_expires.strftime('%d.%m.%Y')}"
-        elif u.get("trial_used"):
-            # Был триал — смотрим когда истёк ключ
-            key_exp = u.get("key_expires")
-            if key_exp:
-                if key_exp.tzinfo is None:
-                    key_exp = key_exp.replace(tzinfo=timezone.utc)
-                if key_exp < now:
-                    sub_str = f"⏰ триал истёк {key_exp.strftime('%d.%m.%Y')}"
-                else:
-                    sub_str = f"🎁 триал до {key_exp.strftime('%d.%m.%Y')}"
-            else:
-                sub_str = "🎁 триал использован"
-        else:
-            sub_str = "➖ нет"
-
-        # Ключ
-        key_expires = u.get("key_expires")
-        if key_expires:
-            if key_expires.tzinfo is None:
-                key_expires = key_expires.replace(tzinfo=timezone.utc)
-            days_left = (key_expires - now).days
-            if days_left < 0:
-                key_str = f"❌ ключ истёк {key_expires.strftime('%d.%m.%Y')}"
-            elif days_left == 0:
-                key_str = "⚠️ ключ истекает сегодня"
-            elif days_left <= 3:
-                key_str = f"⚠️ ключ {days_left}д"
-            else:
-                key_str = f"🔑 до {key_expires.strftime('%d.%m.%Y')}"
-        else:
-            key_str = "🔑 нет ключа"
-
-        lines.append(f"👤 {name} ({tg})\n   {sub_str} | {key_str}")
-        rows.append([{"text": f"🗑 Удалить {name} ({tg})", "callback_data": f"admin_del_{u['user_id']}"}])
-
-    rows.append([{"text": "🔑 Перевыпустить все ключи", "callback_data": "admin_reissue_keys"}])
-    rows.append([{"text": "🔄 Обновить", "callback_data": "admin_panel"}])
-    rows.append([{"text": "◀️ Главное меню", "callback_data": "main_menu"}])
-    keyboard = {"inline_keyboard": rows}
-    text = "\n".join(lines)
-    if edit and message_id:
-        edit_message(chat_id, message_id, text, reply_markup=keyboard, parse_mode=None)
-    else:
-        send_message(chat_id, text, reply_markup=keyboard, parse_mode=None)
-
-
-# ── Меню ─────────────────────────────────────────────────────────────────────
+# ── Меню ──────────────────────────────────────────────────────────────────────
 
 def send_trial_menu(chat_id, name: str):
     keyboard = {
@@ -460,15 +319,21 @@ def send_trial_menu(chat_id, name: str):
 
 def send_main_menu(chat_id, user: dict, user_id: int = None):
     name = user.get("name", "—")
+    key = get_key(user_id) if user_id else None
     rows = [
         [{"text": "👤 Мой профиль", "callback_data": "profile"}],
     ]
-    if user_id:
-        keys = get_keys(user_id)
-        if keys:
-            rows.append([{"text": "🔑 Показать мой ключ", "callback_data": f"key_{keys[0]['id']}"}])
-    rows.append([{"text": "💳 Оформить подписку — 199 ₽/мес", "callback_data": "subscribe"}])
-    rows.append([{"text": "➕ Создать новый ключ", "callback_data": "create_key"}])
+    if key:
+        rows.append([{"text": "🔑 Мой ключ", "callback_data": "show_key"}])
+    else:
+        rows.append([{"text": "➕ Создать ключ", "callback_data": "create_key"}])
+
+    sub = get_subscription(user_id) if user_id else None
+    if not sub or sub["status"] != "active":
+        rows.append([{"text": "💳 Оформить подписку — 199 ₽/мес", "callback_data": "subscribe"}])
+    else:
+        rows.append([{"text": "🔕 Отменить подписку", "callback_data": "cancel_sub"}])
+
     rows.append([{"text": "🛟 Поддержка", "callback_data": "support"}])
     if user.get("tg_username") in ADMIN_USERNAMES:
         rows.append([{"text": "🛠 Админ панель", "callback_data": "admin_panel"}])
@@ -480,56 +345,135 @@ def send_main_menu(chat_id, user: dict, user_id: int = None):
     )
 
 
-def send_keys_list(chat_id, user_id: int, edit=False, message_id=None):
-    keys = get_keys(user_id)
-    if not keys:
-        text = "У тебя пока нет ключей.\nНажми *➕ Создать новый ключ* в главном меню."
-        keyboard = {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]}
-        if edit and message_id:
-            edit_message(chat_id, message_id, text, reply_markup=keyboard)
+def send_key_detail(chat_id, message_id, key: dict, edit=True):
+    date = key["created_at"].strftime("%d.%m.%Y %H:%M") if key["created_at"] else "—"
+    if key.get("expires_at"):
+        exp = key["expires_at"]
+        if hasattr(exp, 'tzinfo') and exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        days_left = (exp - now).days
+        expires_str = exp.strftime("%d.%m.%Y")
+        if days_left < 0:
+            validity = f"❌ истёк {expires_str}"
+        elif days_left == 0:
+            validity = "⚠️ истекает сегодня"
         else:
-            send_message(chat_id, text, reply_markup=keyboard)
-        return
+            validity = f"до *{expires_str}* ({days_left} дн.)"
+    else:
+        validity = "*бессрочно*"
 
-    rows = []
-    for k in keys:
-        date = k["created_at"].strftime("%d.%m.%Y") if k["created_at"] else "—"
-        rows.append([{"text": f"🔑 {k['name']} • {date}", "callback_data": f"key_{k['id']}"}])
-    rows.append([{"text": "◀️ Назад", "callback_data": "main_menu"}])
-
-    text = f"🔑 *Твои ключи* ({len(keys)} шт.):\n\nНажми на ключ чтобы посмотреть или удалить:"
-    keyboard = {"inline_keyboard": rows}
-
-    if edit and message_id:
+    text = (
+        f"🔑 *Ключ: {key['name']}*\n\n"
+        f"📅 Создан: {date}\n"
+        f"⏳ Действует: {validity}\n\n"
+        f"`{key['vless_link']}`\n\n"
+        "Скопируй и вставь в приложение:"
+    )
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "📱 Инструкция по подключению", "callback_data": "instruction"}],
+            [{"text": "◀️ Главное меню", "callback_data": "main_menu"}],
+        ]
+    }
+    if edit:
         edit_message(chat_id, message_id, text, reply_markup=keyboard)
     else:
         send_message(chat_id, text, reply_markup=keyboard)
 
 
-def send_key_detail(chat_id, message_id, key: dict):
-    date = key["created_at"].strftime("%d.%m.%Y %H:%M") if key["created_at"] else "—"
-    if key.get("expires_at"):
-        expires_str = key["expires_at"].strftime("%d.%m.%Y")
-        validity = f"до *{expires_str}*"
-    else:
-        validity = "*бессрочно*"
+def send_instruction(chat_id, message_id):
     text = (
-        f"🔑 *Ключ: {key['name']}*\n\n"
-        f"📅 Создан: {date}\n"
-        f"⏳ Действует: {validity}\n\n"
-        f"`{key['vless_link']}`"
+        "📱 *Инструкция по подключению*\n\n"
+        "*iPhone / iPad:*\n"
+        "1. Установи Streisand из App Store\n"
+        "2. Нажми + → вставь ключ → Сохрани\n"
+        "3. Нажми Connect\n\n"
+        "*Android:*\n"
+        "1. Установи v2rayNG из Google Play\n"
+        "2. Нажми + → вставь ключ → OK\n"
+        "3. Нажми кнопку запуска\n\n"
+        "*Windows / Mac:*\n"
+        "1. Установи Hiddify\n"
+        "2. Добавь профиль → вставь ключ\n"
+        "3. Нажми Connect\n\n"
+        "*Мобильная связь (4G/5G):*\n"
+        "Ключ работает на любом типе соединения — Wi-Fi и мобильный интернет.\n\n"
+        "Проблемы? Пиши в поддержку: @btb75"
     )
-    keyboard = {
-        "inline_keyboard": [
-            [{"text": "📖 Инструкция по подключению", "callback_data": f"instruction_{key['id']}"}],
-            [{"text": "🗑 Удалить этот ключ", "callback_data": f"del_{key['id']}"}],
-            [{"text": "◀️ К списку ключей", "callback_data": "my_keys"}],
-        ]
-    }
+    keyboard = {"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "show_key"}]]}
     edit_message(chat_id, message_id, text, reply_markup=keyboard)
 
 
-# ── Обработчик ───────────────────────────────────────────────────────────────
+def send_admin_menu(chat_id, message_id=None, edit=False):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT COUNT(*) FROM {DB_SCHEMA}.user_states")
+        total = cur.fetchone()[0]
+        cur.execute(f"""
+            SELECT u.user_id, u.name, u.tg_username, u.trial_used,
+                   k.expires_at as key_expires,
+                   s.status as sub_status, s.expires_at as sub_expires
+            FROM {DB_SCHEMA}.user_states u
+            LEFT JOIN {DB_SCHEMA}.user_keys k ON k.user_id = u.user_id
+            LEFT JOIN (
+                SELECT DISTINCT ON (user_id) user_id, status, expires_at
+                FROM {DB_SCHEMA}.subscriptions
+                ORDER BY user_id, id DESC
+            ) s ON s.user_id = u.user_id
+            ORDER BY u.updated_at DESC
+            LIMIT 15
+        """)
+        users = cur.fetchall()
+    finally:
+        conn.close()
+
+    now = datetime.now(timezone.utc)
+    lines = [f"🛠 Админ-панель RossoVPN\n\nВсего пользователей: {total}\n"]
+    rows = []
+
+    for u in users:
+        uid, name, tg, trial_used, key_exp, sub_status, sub_exp = u
+        name = name or "—"
+        tg_str = f"@{tg}" if tg else "без username"
+
+        if sub_status == "active" and sub_exp:
+            if hasattr(sub_exp, 'tzinfo') and sub_exp.tzinfo is None:
+                sub_exp = sub_exp.replace(tzinfo=timezone.utc)
+            sub_str = f"💳 до {sub_exp.strftime('%d.%m.%Y')}"
+        elif trial_used:
+            sub_str = "🎁 триал"
+        else:
+            sub_str = "➖ нет"
+
+        if key_exp:
+            if hasattr(key_exp, 'tzinfo') and key_exp.tzinfo is None:
+                key_exp = key_exp.replace(tzinfo=timezone.utc)
+            days = (key_exp - now).days
+            if days < 0:
+                key_str = f"❌ истёк"
+            elif days <= 3:
+                key_str = f"⚠️ {days}д"
+            else:
+                key_str = f"🔑 до {key_exp.strftime('%d.%m')}"
+        else:
+            key_str = "🔑 нет"
+
+        lines.append(f"👤 {name} ({tg_str})\n   {sub_str} | {key_str}")
+        rows.append([{"text": f"🗑 Удалить {name}", "callback_data": f"admin_del_{uid}"}])
+
+    rows.append([{"text": "🔄 Обновить", "callback_data": "admin_panel"}])
+    rows.append([{"text": "◀️ Главное меню", "callback_data": "main_menu"}])
+    keyboard = {"inline_keyboard": rows}
+    text = "\n".join(lines)
+    if edit and message_id:
+        edit_message(chat_id, message_id, text, reply_markup=keyboard, parse_mode=None)
+    else:
+        send_message(chat_id, text, reply_markup=keyboard, parse_mode=None)
+
+
+# ── Обработчик ────────────────────────────────────────────────────────────────
 
 def handle_update(update: dict):
     print(f"[handle_update] keys={list(update.keys())}")
@@ -545,62 +489,90 @@ def handle_update(update: dict):
 
         user = get_user(user_id)
 
-        if data == "get_trial":
+        if data == "main_menu":
+            set_step(user_id, "menu")
+            send_main_menu(chat_id, user, user_id)
+
+        elif data == "show_key":
+            key = get_key(user_id)
+            if key:
+                send_key_detail(chat_id, message_id, key, edit=True)
+            else:
+                edit_message(chat_id, message_id, "У тебя пока нет ключа.",
+                             reply_markup={"inline_keyboard": [[{"text": "➕ Создать ключ", "callback_data": "create_key"}, {"text": "◀️ Назад", "callback_data": "main_menu"}]]})
+
+        elif data == "instruction":
+            send_instruction(chat_id, message_id)
+
+        elif data == "get_trial":
             if user.get("trial_used"):
                 answer_callback(callback["id"], "Пробный ключ уже был использован", show_alert=True)
             else:
-                send_message(chat_id, "⏳ Создаю пробный ключ на 7 дней, подождите...")
-                full_label = f"trial_{user_id}_{str(uuid.uuid4())[:8]}"
-                import time
-                from datetime import datetime, timedelta
-                expires_dt = datetime.utcnow() + timedelta(days=7)
-                expires_ms = int(expires_dt.timestamp() * 1000)
-                client_id, vless_link, error = xui_create_client(full_label, expires_ms)
+                key = get_key(user_id)
+                if key:
+                    answer_callback(callback["id"], "У тебя уже есть ключ!", show_alert=True)
+                else:
+                    send_message(chat_id, "⏳ Создаю пробный ключ на 7 дней...")
+                    expires_dt = datetime.now(timezone.utc) + timedelta(days=7)
+                    marz_user = f"u{user_id}_{uuid.uuid4().hex[:8]}"
+                    vless_link, error = marzban_create_user(marz_user, expires_dt)
+                    if error:
+                        send_message(chat_id, f"❌ Не удалось создать ключ: {error}\nНапиши в поддержку: @btb75")
+                    else:
+                        save_key(user_id, marz_user, "Пробный (7 дней)", vless_link, expires_at=expires_dt)
+                        set_trial_used(user_id)
+                        send_message(
+                            chat_id,
+                            "🎁 *Пробный ключ активирован на 7 дней!*\n\n"
+                            f"🔑 Твой VLESS ключ:\n\n`{vless_link}`\n\n"
+                            "Скопируй и вставь в приложение.\n"
+                            "После пробного периода оформи подписку — *199 ₽/месяц*."
+                        )
+                        user = get_user(user_id)
+                        send_main_menu(chat_id, user, user_id)
+
+        elif data == "create_key":
+            key = get_key(user_id)
+            if key:
+                send_key_detail(chat_id, message_id, key, edit=True)
+            else:
+                # Определяем срок — по подписке или 7 дней
+                sub = get_subscription(user_id)
+                if sub and sub["status"] == "active" and sub["expires_at"]:
+                    expires_dt = sub["expires_at"]
+                    if hasattr(expires_dt, 'tzinfo') and expires_dt.tzinfo is None:
+                        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+                    key_name = "Мой VPN ключ"
+                else:
+                    expires_dt = datetime.now(timezone.utc) + timedelta(days=7)
+                    key_name = "Пробный (7 дней)"
+
+                send_message(chat_id, "⏳ Создаю ключ...")
+                marz_user = f"u{user_id}_{uuid.uuid4().hex[:8]}"
+                vless_link, error = marzban_create_user(marz_user, expires_dt)
                 if error:
                     send_message(chat_id, f"❌ Не удалось создать ключ: {error}\nНапиши в поддержку: @btb75")
                 else:
-                    save_key(user_id, client_id, "Пробный (7 дней)", vless_link, expires_at=expires_dt)
-                    conn = get_db()
-                    cur = conn.cursor()
-                    cur.execute(f"UPDATE {DB_SCHEMA}.user_states SET trial_used=TRUE WHERE user_id={user_id}")
-                    conn.commit()
-                    cur.close()
-                    conn.close()
-                    send_message(
-                        chat_id,
-                        "🎁 *Пробный ключ активирован на 7 дней!*\n\n"
-                        f"🔑 Твой VLESS ключ:\n\n`{vless_link}`\n\n"
-                        "Скопируй и вставь в приложение для подключения.\n\n"
-                        "После пробного периода оформи подписку — *199 ₽/месяц*."
-                    )
-                    send_main_menu(chat_id, user, user_id)
-
-        elif data == "main_menu":
-            set_step(user_id, "menu")
-            send_main_menu(chat_id, user, user_id)
+                    save_key(user_id, marz_user, key_name, vless_link, expires_at=expires_dt)
+                    key = get_key(user_id)
+                    send_key_detail(chat_id, message_id, key, edit=False)
 
         elif data == "profile":
             name = user.get("name", "—")
             tg_u = user.get("tg_username", "")
-            keys = get_keys(user_id)
             tg_line = f"@{tg_u}" if tg_u else "не указан"
+            key = get_key(user_id)
+            key_count = 1 if key else 0
 
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute(
-                f"SELECT status, expires_at FROM {DB_SCHEMA}.subscriptions WHERE user_id=%s ORDER BY id DESC LIMIT 1",
-                (user_id,)
-            )
-            sub = cur.fetchone()
-            cur.close()
-            conn.close()
-
-            if sub and sub[0] == "active" and sub[1]:
-                expires = sub[1].strftime("%d.%m.%Y")
-                sub_line = f"💳 Активна до *{expires}*"
-            elif sub and sub[0] == "cancelled":
+            sub = get_subscription(user_id)
+            if sub and sub["status"] == "active" and sub["expires_at"]:
+                exp = sub["expires_at"]
+                if hasattr(exp, 'tzinfo') and exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=timezone.utc)
+                sub_line = f"💳 Активна до *{exp.strftime('%d.%m.%Y')}*"
+            elif sub and sub["status"] == "cancelled":
                 sub_line = "🔕 Отменена"
-            elif sub and sub[0] == "expired":
+            elif sub and sub["status"] == "expired":
                 sub_line = "❌ Истекла"
             else:
                 sub_line = "Нет активной подписки"
@@ -609,530 +581,238 @@ def handle_update(update: dict):
                 f"👤 *Профиль*\n\n"
                 f"Имя: *{name}*\n"
                 f"Telegram: {tg_line}\n"
-                f"Ключей: *{len(keys)}*\n"
+                f"Ключей: *{key_count}*\n"
                 f"Подписка: {sub_line}"
             )
-            kb_rows = [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]
-            if not sub or sub[0] != "active":
-                kb_rows.insert(0, [{"text": "💳 Оформить подписку — 199 ₽/мес", "callback_data": "subscribe"}])
-            keyboard = {"inline_keyboard": kb_rows}
-            edit_message(chat_id, message_id, text, reply_markup=keyboard)
+            kb_rows = []
+            if not sub or sub["status"] != "active":
+                kb_rows.append([{"text": "💳 Оформить подписку — 199 ₽/мес", "callback_data": "subscribe"}])
+            kb_rows.append([{"text": "◀️ Назад", "callback_data": "main_menu"}])
+            edit_message(chat_id, message_id, text, reply_markup={"inline_keyboard": kb_rows})
 
-        elif data == "my_keys":
-            send_keys_list(chat_id, user_id, edit=True, message_id=message_id)
+        elif data == "subscribe":
+            sub = get_subscription(user_id)
+            if sub and sub["status"] == "active":
+                exp = sub["expires_at"]
+                if exp and hasattr(exp, 'tzinfo') and exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=timezone.utc)
+                exp_str = exp.strftime('%d.%m.%Y') if exp else "—"
+                edit_message(chat_id, message_id,
+                             f"✅ Подписка уже активна до *{exp_str}*.",
+                             reply_markup={"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]})
+                return
 
-        elif data == "create_key":
-            keys = get_keys(user_id)
-            if keys:
-                old = keys[0]
-                date = old["created_at"].strftime("%d.%m.%Y") if old["created_at"] else "—"
-                keyboard = {
-                    "inline_keyboard": [
-                        [{"text": "✅ Да, удалить старый и создать новый", "callback_data": f"replace_key_{old['id']}"}],
-                        [{"text": "◀️ Отмена", "callback_data": "main_menu"}],
-                    ]
-                }
-                edit_message(
-                    chat_id, message_id,
-                    f"⚠️ *У тебя уже есть ключ*\n\n"
-                    f"🔑 «{old['name']}» (создан {date})\n\n"
-                    f"Он будет *отключён и удалён*. Продолжить?",
-                    reply_markup=keyboard
-                )
+            if not YUKASSA_API_KEY:
+                edit_message(chat_id, message_id, "Оплата временно недоступна. Напиши @btb75",
+                             reply_markup={"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]})
+                return
+
+            import uuid as _uuid
+            idempotency_key = str(_uuid.uuid4())
+            payload = {
+                "amount": {"value": "199.00", "currency": "RUB"},
+                "confirmation": {"type": "redirect", "return_url": "https://t.me/RossoVPN_bot"},
+                "capture": True,
+                "save_payment_method": True,
+                "description": f"Подписка RossoVPN — пользователь {user_id}",
+                "metadata": {"user_id": str(user_id)}
+            }
+            resp = requests.post(
+                "https://api.yookassa.ru/v3/payments",
+                json=payload,
+                auth=(YUKASSA_SHOP_ID, YUKASSA_API_KEY),
+                headers={"Idempotence-Key": idempotency_key},
+                timeout=15
+            )
+            if resp.status_code == 200:
+                pay_data = resp.json()
+                pay_url = pay_data.get("confirmation", {}).get("confirmation_url", "")
+                if pay_url:
+                    keyboard = {"inline_keyboard": [
+                        [{"text": "💳 Оплатить 199 ₽", "url": pay_url}],
+                        [{"text": "◀️ Отмена", "callback_data": "main_menu"}]
+                    ]}
+                    edit_message(chat_id, message_id,
+                                 "💳 *Оформление подписки*\n\n"
+                                 "Стоимость: *199 ₽/месяц*\n"
+                                 "Автопродление каждые 30 дней.\n\n"
+                                 "Нажми кнопку для оплаты:",
+                                 reply_markup=keyboard)
+                else:
+                    edit_message(chat_id, message_id, "Ошибка создания платежа. Напиши @btb75",
+                                 reply_markup={"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]})
             else:
-                set_step(user_id, "creating_key")
-                keyboard = {"inline_keyboard": [[{"text": "◀️ Отмена", "callback_data": "main_menu"}]]}
-                edit_message(chat_id, message_id, "✏️ Введи название для нового ключа (например: *Телефон*, *Ноутбук*):", reply_markup=keyboard)
+                edit_message(chat_id, message_id, f"Ошибка оплаты: {resp.status_code}. Напиши @btb75",
+                             reply_markup={"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]})
+
+        elif data == "cancel_sub":
+            keyboard = {"inline_keyboard": [
+                [{"text": "✅ Да, отменить", "callback_data": "cancel_sub_do"}],
+                [{"text": "◀️ Нет, назад", "callback_data": "main_menu"}]
+            ]}
+            edit_message(chat_id, message_id,
+                         "⚠️ *Отмена подписки*\n\nПосле отмены VPN продолжит работать до конца оплаченного периода.\n\nТочно отменить?",
+                         reply_markup=keyboard)
 
         elif data == "cancel_sub_do":
-            answer_callback(callback["id"], "⏳ Обрабатываем запрос...", show_alert=False)
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute(
-                f"SELECT id, payment_method_id FROM {DB_SCHEMA}.subscriptions WHERE user_id=%s AND status='active' ORDER BY id DESC LIMIT 1",
-                (user_id,)
-            )
-            sub = cur.fetchone()
-            if sub and YUKASSA_API_KEY:
-                sub_id, payment_method_id = sub
-                resp = requests.post(
-                    f"https://api.yookassa.ru/v3/recurring-payments/{payment_method_id}/cancel",
+            sub = get_subscription(user_id)
+            if sub and sub["status"] == "active" and YUKASSA_API_KEY and sub.get("payment_method_id"):
+                requests.post(
+                    f"https://api.yookassa.ru/v3/recurring-payments/{sub['payment_method_id']}/cancel",
                     auth=(YUKASSA_SHOP_ID, YUKASSA_API_KEY),
                     timeout=10
                 )
-                cur.execute(
-                    f"UPDATE {DB_SCHEMA}.subscriptions SET status='cancelled', cancelled_at=NOW(), updated_at=NOW() WHERE id=%s",
-                    (sub_id,)
-                )
-                conn.commit()
-                send_message(
-                    chat_id,
-                    "✅ *Подписка отменена*\n\n"
-                    "Автопродление отключено — больше списаний не будет.\n"
-                    "Доступ к VPN сохранится до конца оплаченного периода."
-                )
-            elif sub:
-                cur.execute(
-                    f"UPDATE {DB_SCHEMA}.subscriptions SET status='cancelled', cancelled_at=NOW(), updated_at=NOW() WHERE id=%s",
-                    (sub[0],)
-                )
-                conn.commit()
-                send_message(chat_id, "✅ Подписка отменена. Списаний больше не будет.")
-            else:
-                send_message(chat_id, "У тебя нет активной подписки.")
-            cur.close()
-            conn.close()
-
-        elif data == "subscribe":
-            if not YUKASSA_API_KEY:
-                edit_message(
-                    chat_id, message_id,
-                    "⏳ *Оплата временно недоступна*\n\nПожалуйста, попробуй позже или напиши в поддержку: @btb75",
-                    reply_markup={"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]}
-                )
-            else:
-                idempotency_key = str(uuid.uuid4())
-                payment_payload = {
-                    "amount": {"value": "199.00", "currency": "RUB"},
-                    "confirmation": {"type": "redirect", "return_url": "https://t.me/RossoVPN_bot"},
-                    "capture": True,
-                    "save_payment_method": True,
-                    "description": f"Подписка RossoVPN — 30 дней (user {user_id})",
-                    "metadata": {"user_id": str(user_id)}
-                }
-                resp = requests.post(
-                    "https://api.yookassa.ru/v3/payments",
-                    auth=(YUKASSA_SHOP_ID, YUKASSA_API_KEY),
-                    json=payment_payload,
-                    headers={"Idempotence-Key": idempotency_key},
-                    timeout=15
-                )
-                pay_data = resp.json()
-                pay_id = pay_data.get("id")
-                pay_url = pay_data.get("confirmation", {}).get("confirmation_url")
-
-                if pay_id and pay_url:
-                    conn = get_db()
+            if sub:
+                conn = get_db()
+                try:
                     cur = conn.cursor()
                     cur.execute(
-                        f"INSERT INTO {DB_SCHEMA}.payments (user_id, yukassa_payment_id, amount, status) VALUES (%s, %s, 199.00, 'pending')",
-                        (user_id, pay_id)
+                        f"UPDATE {DB_SCHEMA}.subscriptions SET status='cancelled' WHERE user_id={user_id} AND status='active'"
                     )
                     conn.commit()
-                    cur.close()
+                finally:
                     conn.close()
-
-                    keyboard = {
-                        "inline_keyboard": [
-                            [{"text": "💳 Перейти к оплате", "url": pay_url}],
-                            [{"text": "📄 Читать оферту", "url": "https://telegra.ph/Publichnaya-oferta-RossoVPN-04-14"}],
-                            [{"text": "◀️ Назад", "callback_data": "main_menu"}],
-                        ]
-                    }
-                    edit_message(
-                        chat_id, message_id,
-                        "💳 *Оформление подписки*\n\n"
-                        "Тариф: *Базовый — 199 ₽/месяц*\n"
-                        "✅ Безлимитный трафик\n"
-                        "✅ Высокая скорость\n"
-                        "✅ Автопродление каждые 30 дней\n\n"
-                        "📌 После оплаты карта сохранится — следующие списания будут автоматическими.\n"
-                        "Отключить в любой момент: /cancel\n\n"
-                        "Нажимая «Перейти к оплате», ты принимаешь условия публичной оферты 👇",
-                        reply_markup=keyboard
-                    )
-                else:
-                    edit_message(
-                        chat_id, message_id,
-                        "❌ Не удалось создать платёж. Попробуй позже или напиши в поддержку: @btb75",
-                        reply_markup={"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]}
-                    )
+            edit_message(chat_id, message_id,
+                         "✅ Подписка отменена. VPN будет работать до конца оплаченного периода.",
+                         reply_markup={"inline_keyboard": [[{"text": "◀️ Главное меню", "callback_data": "main_menu"}]]})
 
         elif data == "support":
-            keyboard = {
-                "inline_keyboard": [
-                    [{"text": "👤 Написать @btb75", "url": "https://t.me/btb75"}],
-                    [{"text": "👤 Написать @makarevichas", "url": "https://t.me/makarevichas"}],
-                    [{"text": "◀️ Назад", "callback_data": "main_menu"}],
-                ]
-            }
-            edit_message(
-                chat_id, message_id,
-                "🛟 *Поддержка RossoVPN*\n\n"
-                "По любым вопросам — подключение, оплата, возврат или что-то пошло не так — наши специалисты всегда на связи.\n\n"
-                "⏱ Среднее время ответа: *до 2 часов*\n\n"
-                "Выбери удобного специалиста 👇",
-                reply_markup=keyboard
-            )
-
-        elif data.startswith("replace_key_"):
-            old_id = int(data.split("_", 2)[2])
-            key_info = delete_key_by_id(old_id, user_id)
-            session = xui_login()
-            if session:
-                xui_delete_all_user_clients(session, user_id)
-            elif key_info:
-                xui_delete_client(key_info["client_id"])
-            set_step(user_id, "creating_key")
-            keyboard = {"inline_keyboard": [[{"text": "◀️ Отмена", "callback_data": "main_menu"}]]}
-            edit_message(chat_id, message_id, "✏️ Старый ключ удалён. Введи название для нового ключа (например: *Телефон*, *Ноутбук*):", reply_markup=keyboard)
-
-        elif data.startswith("instruction_"):
-            key_id = int(data.split("_", 1)[1])
-            instruction_text = (
-                "📖 *Как подключиться к VPN*\n\n"
-                "Тебе нужно приложение *v2rayNG* (Android) или *Streisand* (iPhone).\n\n"
-                "📱 *Скачать приложение:*\n"
-                "• Android: [v2rayNG в Google Play](https://play.google.com/store/apps/details?id=com.v2ray.ang)\n"
-                "• iPhone: [Streisand в App Store](https://apps.apple.com/app/streisand/id6450534064)\n\n"
-                "⚙️ *Как добавить ключ:*\n"
-                "1. Открой приложение\n"
-                "2. Нажми *+* (плюс) в правом верхнем углу\n"
-                "3. Выбери *«Импорт из буфера обмена»*\n"
-                "4. Вставь скопированный ключ — он добавится автоматически\n"
-                "5. Нажми кнопку подключения\n\n"
-                "✅ Готово! VPN включён.\n\n"
-                "❓ Если что-то не получается — пиши @btb75"
-            )
-            keyboard = {"inline_keyboard": [
-                [{"text": "◀️ Назад к ключу", "callback_data": f"key_{key_id}"}],
-            ]}
-            edit_message(chat_id, message_id, instruction_text, reply_markup=keyboard)
-
-        elif data.startswith("key_"):
-            key_id = int(data.split("_", 1)[1])
-            keys = get_keys(user_id)
-            key = next((k for k in keys if k["id"] == key_id), None)
-            if key:
-                send_key_detail(chat_id, message_id, key)
-            else:
-                edit_message(chat_id, message_id, "Ключ не найден.")
-
-        elif data.startswith("del_"):
-            key_id = int(data.split("_", 1)[1])
-            keyboard = {
-                "inline_keyboard": [
-                    [{"text": "✅ Да, удалить", "callback_data": f"confirm_del_{key_id}"}],
-                    [{"text": "◀️ Отмена", "callback_data": f"key_{key_id}"}],
-                ]
-            }
-            edit_message(chat_id, message_id, "⚠️ Ты уверен? Ключ будет удалён и перестанет работать.", reply_markup=keyboard)
+            edit_message(chat_id, message_id,
+                         "🛟 *Поддержка RossoVPN*\n\n"
+                         "Пиши нам:\n"
+                         "• @btb75\n"
+                         "• @makarevichas\n\n"
+                         "Отвечаем быстро 🚀",
+                         reply_markup={"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "main_menu"}]]})
 
         elif data == "admin_panel":
-            if callback["from"].get("username") not in ADMIN_USERNAMES:
-                answer_callback(callback["id"], "Доступ запрещён", show_alert=True)
+            if user.get("tg_username") not in ADMIN_USERNAMES:
                 return
-            answer_callback(callback["id"])
             send_admin_menu(chat_id, message_id, edit=True)
 
         elif data.startswith("admin_del_"):
-            if callback["from"].get("username") not in ADMIN_USERNAMES:
-                answer_callback(callback["id"], "Доступ запрещён", show_alert=True)
+            if user.get("tg_username") not in ADMIN_USERNAMES:
                 return
-            target_id = int(data.split("_", 2)[2])
-            users = admin_get_users(limit=100)
-            target = next((u for u in users if u["user_id"] == target_id), None)
-            name = target["name"] if target else str(target_id)
-            tg = f"@{target['tg_username']}" if target and target["tg_username"] else ""
-            keyboard = {"inline_keyboard": [
-                [{"text": "✅ Да, удалить", "callback_data": f"admin_confirm_del_{target_id}"}],
-                [{"text": "◀️ Отмена", "callback_data": "admin_panel"}],
-            ]}
-            edit_message(chat_id, message_id, f"⚠️ Удалить пользователя *{name}* {tg}?\n\nВсе его ключи тоже будут удалены.", reply_markup=keyboard)
-
-        elif data.startswith("admin_confirm_del_"):
-            if callback["from"].get("username") not in ADMIN_USERNAMES:
-                answer_callback(callback["id"], "Доступ запрещён", show_alert=True)
-                return
-            target_id = int(data.split("_", 3)[3])
-            keys = get_keys(target_id)
-            for k in keys:
-                xui_delete_client(k["client_id"])
-            admin_delete_user(target_id)
-            answer_callback(callback["id"], "✅ Пользователь удалён", show_alert=True)
+            target_id = int(data.replace("admin_del_", ""))
+            # Удаляем ключ из Marzban
+            conn = get_db()
+            try:
+                cur = conn.cursor()
+                cur.execute(f"SELECT marzban_username FROM {DB_SCHEMA}.user_keys WHERE user_id={target_id}")
+                row = cur.fetchone()
+                if row and row[0]:
+                    marzban_delete_user(row[0])
+                cur.execute(f"DELETE FROM {DB_SCHEMA}.user_keys WHERE user_id={target_id}")
+                cur.execute(f"DELETE FROM {DB_SCHEMA}.subscriptions WHERE user_id={target_id}")
+                cur.execute(f"DELETE FROM {DB_SCHEMA}.user_states WHERE user_id={target_id}")
+                conn.commit()
+            finally:
+                conn.close()
             send_admin_menu(chat_id, message_id, edit=True)
-
-        elif data == "admin_reissue_keys":
-            if callback["from"].get("username") not in ADMIN_USERNAMES:
-                answer_callback(callback["id"], "Доступ запрещён", show_alert=True)
-                return
-            answer_callback(callback["id"])
-            keyboard = {"inline_keyboard": [
-                [{"text": "✅ Да, перевыпустить всем", "callback_data": "admin_confirm_reissue"}],
-                [{"text": "◀️ Отмена", "callback_data": "admin_panel"}],
-            ]}
-            edit_message(
-                chat_id, message_id,
-                "⚠️ *Перевыпуск всех ключей*\n\n"
-                "Все пользователи получат новые ключи — старые перестанут работать.\n"
-                "Каждому придёт уведомление с инструкцией.\n\n"
-                "Сроки подписок сохранятся.\n\n"
-                "Это действие нельзя отменить. Продолжить?",
-                reply_markup=keyboard
-            )
-
-        elif data == "admin_confirm_reissue":
-            if callback["from"].get("username") not in ADMIN_USERNAMES:
-                answer_callback(callback["id"], "Доступ запрещён", show_alert=True)
-                return
-            answer_callback(callback["id"])
-            edit_message(chat_id, message_id, "⏳ Перевыпускаю ключи... Это может занять минуту.", parse_mode=None)
-            reissue_url = "https://functions.poehali.dev/36ba2c59-67ea-4253-87e4-249877b875c4"
-            admin_token = os.environ.get("ADMIN_SECRET_TOKEN", "")
-            if reissue_url:
-                resp = requests.post(
-                    reissue_url,
-                    json={"admin_token": admin_token},
-                    timeout=120
-                )
-                if resp.status_code == 200:
-                    result = resp.json()
-                    success = result.get("success", 0)
-                    failed = result.get("failed", 0)
-                    total = result.get("users_processed", 0)
-                    edit_message(
-                        chat_id, message_id,
-                        f"✅ *Перевыпуск завершён*\n\n"
-                        f"👥 Обработано пользователей: {total}\n"
-                        f"✔️ Успешно: {success}\n"
-                        f"❌ Ошибок: {failed}\n\n"
-                        f"Всем пользователям отправлены уведомления.",
-                        reply_markup={"inline_keyboard": [[{"text": "◀️ В админ-панель", "callback_data": "admin_panel"}]]}
-                    )
-                else:
-                    edit_message(chat_id, message_id, f"❌ Ошибка запроса: {resp.status_code}", parse_mode=None,
-                                 reply_markup={"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "admin_panel"}]]})
-            else:
-                edit_message(chat_id, message_id, "❌ URL функции не найден. Проверь деплой reissue-all-keys.", parse_mode=None,
-                             reply_markup={"inline_keyboard": [[{"text": "◀️ Назад", "callback_data": "admin_panel"}]]})
-
-        elif data.startswith("confirm_del_"):
-            key_id = int(data.split("_", 2)[2])
-            key_info = delete_key_by_id(key_id, user_id)
-            if not key_info:
-                edit_message(chat_id, message_id, "Ключ не найден или уже удалён.")
-                return
-
-            err = xui_delete_client(key_info["client_id"])
-            if err:
-                print(f"[del_client] xui error: {err}")
-
-            set_step(user_id, "menu")
-            send_keys_list(chat_id, user_id, edit=True, message_id=message_id)
 
         return
 
     # ── Message ──
-    message = update.get("message", {})
-    if not message:
+    msg = update.get("message", {})
+    if not msg:
         return
 
-    chat_id = message["chat"]["id"]
-    user_id = message["from"]["id"]
-    text = message.get("text", "").strip()
-    tg_username = message["from"].get("username", "")
-    tg_first_name = message["from"].get("first_name", "")
+    chat_id = msg["chat"]["id"]
+    user_id = msg["from"]["id"]
+    text = msg.get("text", "").strip()
+    tg_username = msg["from"].get("username", "")
+    tg_first_name = msg["from"].get("first_name", "")
 
     user = get_user(user_id)
 
     if text == "/start":
-        if user.get("name"):
-            upsert_user(user_id, "menu", user["name"], tg_username, tg_first_name)
-            if not user.get("trial_used"):
-                send_trial_menu(chat_id, user["name"])
+        if not user:
+            upsert_user(user_id, "reg_name", tg_username=tg_username, tg_first_name=tg_first_name)
+            send_message(chat_id, f"👋 Привет, *{tg_first_name or 'друг'}*!\n\nКак тебя зовут? Напиши своё имя:")
+        else:
+            upsert_user(user_id, "menu", tg_username=tg_username, tg_first_name=tg_first_name)
+            if not user.get("trial_used") and not get_key(user_id):
+                send_trial_menu(chat_id, user.get("name", tg_first_name))
             else:
                 send_main_menu(chat_id, user, user_id)
+
+    elif text == "/offer":
+        send_message(chat_id, "📄 Публичная оферта: https://telegra.ph/Publichnaya-oferta-RossoVPN-06-01")
+
+    elif text == "/refund":
+        send_message(chat_id, "💰 *Возврат средств*\n\nВозврат возможен в течение 7 дней с момента оплаты, если VPN не работает и мы не смогли решить проблему.\n\nПиши: @btb75")
+
+    elif text == "/support":
+        send_message(chat_id, "🛟 Поддержка: @btb75 или @makarevichas")
+
+    elif text == "/cancel":
+        sub = get_subscription(user_id)
+        if sub and sub["status"] == "active":
+            keyboard = {"inline_keyboard": [
+                [{"text": "✅ Да, отменить", "callback_data": "cancel_sub_do"}],
+                [{"text": "◀️ Нет, назад", "callback_data": "main_menu"}]
+            ]}
+            send_message(chat_id, "⚠️ Отменить подписку?", reply_markup=keyboard)
         else:
-            upsert_user(user_id, "ask_name", "", tg_username, tg_first_name)
-            send_message(
-                chat_id,
-                "👋 *Добро пожаловать в RossoVPN!*\n\n"
-                "Быстрый и надёжный VPN — *199 ₽/месяц*.\n\n"
-                "Введи своё имя для регистрации:"
-            )
-        return
+            send_message(chat_id, "У тебя нет активной подписки.")
 
-    if text == "/offer":
-        keyboard = {
-            "inline_keyboard": [
-                [{"text": "📄 Читать полную оферту", "url": "https://telegra.ph/Publichnaya-oferta-RossoVPN-04-14"}],
-            ]
-        }
-        send_message(
-            chat_id,
-            "📄 *Публичная оферта RossoVPN*\n\n"
-            "Тариф: *199 ₽/месяц* — безлимитный трафик, высокая скорость, протокол VLESS Reality.\n\n"
-            "📌 *Автоплатежи:*\n"
-            "— Списание раз в 30 дней\n"
-            "— Уведомление за 3 дня до списания\n"
-            "— Отключение: команда /cancel или через поддержку\n\n"
-            "💸 *Возврат:* в течение 7 дней с момента оплаты\n\n"
-            "Полный текст оферты — по кнопке ниже 👇",
-            reply_markup=keyboard
+    elif user.get("step") == "reg_name":
+        if len(text) < 2:
+            send_message(chat_id, "Имя слишком короткое. Попробуй ещё раз:")
+        else:
+            upsert_user(user_id, "menu", name=text, tg_username=tg_username, tg_first_name=tg_first_name)
+            user = get_user(user_id)
+            send_trial_menu(chat_id, text)
+
+    else:
+        send_main_menu(chat_id, user or {"name": tg_first_name, "tg_username": tg_username}, user_id)
+
+
+def setup_bot():
+    requests.post(f"{TELEGRAM_API}/setMyName", json={"name": "RossoVPN"}, timeout=10)
+    requests.post(f"{TELEGRAM_API}/setMyDescription", json={
+        "description": (
+            "🔒 RossoVPN — быстрый и надёжный VPN-сервис.\n\n"
+            "✅ Безлимитный трафик\n"
+            "✅ Работает на любом устройстве и мобильной связи\n"
+            "✅ 199 ₽/месяц\n\n"
+            "Поддержка: @btb75, @makarevichas"
         )
-        return
-
-    if text == "/refund":
-        send_message(
-            chat_id,
-            "💸 *Условия возврата*\n\n"
-            "Мы принимаем заявки на возврат в течение *7 дней* с момента оплаты.\n\n"
-            "Для оформления возврата обратитесь в поддержку:\n"
-            "👤 @btb75\n"
-            "👤 @makarevichas\n\n"
-            "Укажи свой Telegram и дату оплаты — вернём деньги в течение 3 рабочих дней."
-        )
-        return
-
-    if text == "/cancel":
-        keyboard = {
-            "inline_keyboard": [
-                [{"text": "🔕 Отменить подписку", "callback_data": "cancel_sub_do"}],
-            ]
-        }
-        send_message(
-            chat_id,
-            "🔕 *Отмена подписки*\n\n"
-            "Нажми кнопку ниже — подписка будет автоматически отменена, а ЮКасса прекратит списания.\n\n"
-            "После отмены доступ сохранится до конца оплаченного периода.\n\n"
-            "Поддержка: @btb75, @makarevichas",
-            reply_markup=keyboard
-        )
-        return
-
-    if text == "/support":
-        keyboard = {
-            "inline_keyboard": [
-                [{"text": "👤 Написать @btb75", "url": "https://t.me/btb75"}],
-                [{"text": "👤 Написать @makarevichas", "url": "https://t.me/makarevichas"}],
-            ]
-        }
-        send_message(
-            chat_id,
-            "🛟 *Поддержка RossoVPN*\n\n"
-            "По любым вопросам — подключение, оплата, возврат или что-то пошло не так — наши специалисты всегда на связи.\n\n"
-            "⏱ Среднее время ответа: *до 2 часов*\n\n"
-            "Выбери удобного специалиста 👇",
-            reply_markup=keyboard
-        )
-        return
-
-    step = user.get("step", "")
-    print(f"[message] user_id={user_id} step={step} text={text[:50]}")
-
-    if step == "ask_name":
-        name = text[:50]
-        upsert_user(user_id, "menu", name, tg_username, tg_first_name)
-        send_message(chat_id, f"✅ Отлично, *{name}*! Регистрация завершена.")
-        send_trial_menu(chat_id, name)
-        return
-
-    if step == "creating_key":
-        label = text[:50]
-        upsert_user(user_id, "menu", "", tg_username, tg_first_name)
-        send_message(chat_id, "⏳ Создаю ключ, подождите...")
-
-        from datetime import datetime, timedelta, timezone
-        full_label = f"u{user_id}_{str(uuid.uuid4())[:8]}"
-
-        # Определяем дату истечения: берём из подписки или из существующих ключей
-        expires_dt = None
-        expires_label = "до конца подписки"
-        conn = get_db()
-        try:
-            cur = conn.cursor()
-            # Проверяем активную подписку
-            cur.execute(f"SELECT status, expires_at FROM {DB_SCHEMA}.subscriptions WHERE user_id={user_id} ORDER BY id DESC LIMIT 1")
-            sub = cur.fetchone()
-            if sub and sub[0] == "active" and sub[1]:
-                expires_dt = sub[1]
-                if expires_dt.tzinfo is None:
-                    expires_dt = expires_dt.replace(tzinfo=timezone.utc)
-                expires_label = f"до {expires_dt.strftime('%d.%m.%Y')} (по подписке)"
-            else:
-                # Берём max expires_at из существующих ключей (триал или старый ключ)
-                cur.execute(f"SELECT MAX(expires_at) FROM {DB_SCHEMA}.user_keys WHERE user_id={user_id}")
-                row = cur.fetchone()
-                if row and row[0]:
-                    expires_dt = row[0]
-                    if expires_dt.tzinfo is None:
-                        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
-                    now_utc = datetime.now(timezone.utc)
-                    if expires_dt > now_utc:
-                        expires_label = f"до {expires_dt.strftime('%d.%m.%Y')} (остаток триала)"
-                    else:
-                        expires_dt = None
-        finally:
-            conn.close()
-
-        # Если нет ни подписки, ни действующего ключа — даём 7 дней (первый ключ)
-        if not expires_dt:
-            expires_dt = datetime.now(timezone.utc) + timedelta(days=7)
-            expires_label = "7 дней"
-
-        expires_ms = int(expires_dt.timestamp() * 1000)
-
-        client_id, vless_link, error = xui_create_client(full_label, expires_ms)
-        if error:
-            send_message(chat_id, f"❌ Не удалось создать ключ: {error}")
-            return
-
-        save_key(user_id, client_id, label, vless_link, expires_at=expires_dt)
-        set_step(user_id, "menu")
-
-        text_out = (
-            f"✅ *Ключ «{label}» создан!*\n\n"
-            f"⏳ Действует: *{expires_label}*\n\n"
-            f"🔑 Твой VLESS ключ:\n\n"
-            f"`{vless_link}`\n\n"
-            f"Скопируй и вставь в приложение для подключения."
-        )
-        keyboard = {
-            "inline_keyboard": [
-                [{"text": "🔑 Мои ключи", "callback_data": "my_keys"}],
-                [{"text": "🏠 Главное меню", "callback_data": "main_menu"}],
-            ]
-        }
-        send_message(chat_id, text_out, reply_markup=keyboard)
-        return
-
-    send_main_menu(chat_id, user, user_id)
+    }, timeout=10)
+    requests.post(f"{TELEGRAM_API}/setMyCommands", json={"commands": [
+        {"command": "start",   "description": "Личный кабинет"},
+        {"command": "offer",   "description": "Публичная оферта"},
+        {"command": "refund",  "description": "Условия возврата"},
+        {"command": "support", "description": "Связаться с поддержкой"},
+        {"command": "cancel",  "description": "Отменить подписку"},
+    ]}, timeout=10)
+    print("[setup_bot] done")
 
 
-def handler(event, context) -> dict:
-    """Обработчик webhook от Telegram."""
-    headers = {"Access-Control-Allow-Origin": "*"}
+setup_bot()
 
-    if isinstance(event, str):
-        try:
-            event = json.loads(event)
-        except Exception:
-            event = {}
 
-    if event.get("httpMethod") == "OPTIONS":
-        return {
-            "statusCode": 200,
-            "headers": {
-                **headers,
-                "Access-Control-Allow-Methods": "POST, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type",
-            },
-            "body": ""
-        }
+def handler(event: dict, context) -> dict:
+    """Обработчик вебхука Telegram бота RossoVPN (Marzban)."""
+    if event.get('httpMethod') == 'OPTIONS':
+        return {'statusCode': 200, 'headers': {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type'
+        }, 'body': ''}
 
     try:
-        raw_body = event.get("body", "{}")
-        if isinstance(raw_body, str):
-            body = json.loads(raw_body) if raw_body else {}
+        body = event.get('body', '{}')
+        if isinstance(body, str):
+            update = json.loads(body)
         else:
-            body = raw_body or {}
-
-        handle_update(body)
+            update = body
+        handle_update(update)
     except Exception as e:
         print(f"[handler] error: {e}")
 
     return {
-        "statusCode": 200,
-        "headers": headers,
-        "body": json.dumps({"ok": True})
+        'statusCode': 200,
+        'headers': {'Access-Control-Allow-Origin': '*'},
+        'body': json.dumps({'ok': True})
     }
