@@ -101,6 +101,18 @@ def marzban_create_user(username: str, expires_at: datetime | None) -> tuple:
     return vless_link, None
 
 
+def marzban_get_link(username: str) -> str | None:
+    """Получает актуальную vless ссылку из Marzban."""
+    headers = marzban_headers()
+    if not headers:
+        return None
+    resp = requests.get(f"{MARZBAN_URL}/api/user/{username}", headers=headers, timeout=10)
+    if resp.status_code == 200:
+        links = resp.json().get("links", [])
+        return next((l for l in links if l.startswith("vless://")), None)
+    return None
+
+
 def marzban_delete_user(username: str) -> str | None:
     """Удаляет пользователя из Marzban. None = успех, строка = ошибка."""
     headers = marzban_headers()
@@ -235,6 +247,17 @@ def get_key(user_id: int) -> dict | None:
             return {"id": row[0], "marzban_username": row[1], "name": row[2],
                     "vless_link": row[3], "created_at": row[4], "expires_at": row[5]}
         return None
+    finally:
+        conn.close()
+
+
+def update_key_link(user_id: int, vless_link: str):
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        link_s = vless_link.replace("'", "''")
+        cur.execute(f"UPDATE {DB_SCHEMA}.user_keys SET vless_link = '{link_s}' WHERE user_id = {user_id}")
+        conn.commit()
     finally:
         conn.close()
 
@@ -496,6 +519,10 @@ def handle_update(update: dict):
         elif data == "show_key":
             key = get_key(user_id)
             if key:
+                fresh_link = marzban_get_link(key["marzban_username"])
+                if fresh_link and fresh_link != key["vless_link"]:
+                    update_key_link(user_id, fresh_link)
+                    key["vless_link"] = fresh_link
                 send_key_detail(chat_id, message_id, key, edit=True)
             else:
                 edit_message(chat_id, message_id, "У тебя пока нет ключа.",
