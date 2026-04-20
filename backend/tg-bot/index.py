@@ -519,8 +519,8 @@ def handle_update(update: dict):
                     if error:
                         send_message(chat_id, f"❌ Не удалось создать ключ: {error}\nНапиши в поддержку: @btb75")
                     else:
-                        save_key(user_id, marz_user, "Пробный (7 дней)", vless_link, expires_at=expires_dt)
                         set_trial_used(user_id)
+                        save_key(user_id, marz_user, "Пробный (7 дней)", vless_link, expires_at=expires_dt)
                         send_message(
                             chat_id,
                             "🎁 *Пробный ключ активирован на 7 дней!*\n\n"
