@@ -3,37 +3,58 @@ import os
 import uuid
 import psycopg2
 import requests
+from datetime import datetime, timedelta, timezone
 
 TELEGRAM_API = f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}"
 DB_URL = os.environ["DATABASE_URL"]
 SCHEMA = os.environ.get("MAIN_DB_SCHEMA", "t_p89198250_telegram_vpn_bot_1")
 SHOP_ID = os.environ.get("YUKASSA_SHOP_ID", "")
 API_KEY = os.environ.get("YUKASSA_API_KEY", "")
-XUI_URL = os.environ.get("XUI_URL", "").rstrip("/").replace("https://", "http://")
-XUI_USERNAME = os.environ.get("XUI_USERNAME", "")
-XUI_PASSWORD = os.environ.get("XUI_PASSWORD", "")
-INBOUND_ID = 10
+MARZBAN_URL = os.environ.get("MARZBAN_URL", "").rstrip("/")
+MARZBAN_USERNAME = os.environ.get("MARZBAN_USERNAME", "")
+MARZBAN_PASSWORD = os.environ.get("MARZBAN_PASSWORD", "")
+
+_marzban_token = None
+_marzban_token_expires = None
 
 
-def xui_login():
-    session = requests.Session()
-    resp = session.post(f"{XUI_URL}/login", data={"username": XUI_USERNAME, "password": XUI_PASSWORD}, timeout=10)
-    if resp.status_code == 200 and resp.json().get("success"):
-        return session
+def marzban_get_token() -> str | None:
+    global _marzban_token, _marzban_token_expires
+    now = datetime.now(timezone.utc)
+    if _marzban_token and _marzban_token_expires and now < _marzban_token_expires:
+        return _marzban_token
+    resp = requests.post(
+        f"{MARZBAN_URL}/api/admin/token",
+        data={"username": MARZBAN_USERNAME, "password": MARZBAN_PASSWORD},
+        timeout=10
+    )
+    if resp.status_code == 200:
+        _marzban_token = resp.json().get("access_token")
+        _marzban_token_expires = now + timedelta(minutes=50)
+        return _marzban_token
+    print(f"[marzban_get_token] error {resp.status_code}: {resp.text[:200]}")
     return None
 
 
-def xui_delete_client(client_id: str):
-    session = xui_login()
-    if not session:
-        return "Ошибка авторизации в панели"
-    resp = session.post(f"{XUI_URL}/panel/api/inbounds/{INBOUND_ID}/delClient/{client_id}", timeout=10)
-    if resp.status_code != 200:
-        return f"Ошибка API: {resp.status_code}"
-    data = resp.json()
-    if not data.get("success"):
-        return data.get("msg", "Ошибка удаления")
-    return None
+def marzban_headers() -> dict:
+    token = marzban_get_token()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def marzban_delete_user(username: str) -> str | None:
+    """Удаляет пользователя из Marzban. None = успех, строка = ошибка."""
+    headers = marzban_headers()
+    if not headers:
+        return "Ошибка авторизации в Marzban"
+    resp = requests.delete(
+        f"{MARZBAN_URL}/api/user/{username}",
+        headers=headers,
+        timeout=10
+    )
+    print(f"[marzban_delete_user] status={resp.status_code}")
+    if resp.status_code in (200, 204, 404):
+        return None
+    return f"Ошибка удаления: {resp.status_code}"
 
 
 def get_db():
@@ -66,7 +87,7 @@ def charge_subscription(user_id, subscription_id, payment_method_id):
 
 
 def handler(event: dict, context) -> dict:
-    """Cron-функция автосписания — проверяет истекающие подписки и списывает с карты"""
+    """Cron-функция автосписания — проверяет истекающие подписки и списывает с карты через ЮКасса."""
     headers = {"Access-Control-Allow-Origin": "*"}
 
     conn = get_db()
@@ -103,7 +124,6 @@ def handler(event: dict, context) -> dict:
         payment_id = result.get("id")
         status = result.get("status")
 
-        # Сохраняем платёж
         cur.execute(
             f"""INSERT INTO {SCHEMA}.payments (user_id, subscription_id, yukassa_payment_id, amount, status, payment_method_id)
                 VALUES (%s, %s, %s, 199.00, %s, %s)""",
@@ -117,7 +137,6 @@ def handler(event: dict, context) -> dict:
             )
             charged += 1
         elif status in ("canceled", "refunded"):
-            # Отключаем подписку
             cur.execute(
                 f"UPDATE {SCHEMA}.subscriptions SET status='cancelled', cancelled_at=NOW(), updated_at=NOW() WHERE id=%s",
                 (sub_id,)
@@ -136,7 +155,7 @@ def handler(event: dict, context) -> dict:
             WHERE status='active' AND expires_at < NOW() AND payment_method_id IS NULL"""
     )
 
-    # Уведомление за 1 день до окончания пробного ключа (только у кого нет активной подписки)
+    # Уведомление за 1 день до окончания пробного ключа
     cur.execute(
         f"""SELECT DISTINCT uk.user_id FROM {SCHEMA}.user_keys uk
             WHERE uk.expires_at BETWEEN NOW() + INTERVAL '23 hours' AND NOW() + INTERVAL '25 hours'
@@ -145,7 +164,6 @@ def handler(event: dict, context) -> dict:
                 WHERE s.user_id = uk.user_id AND s.status = 'active'
             )"""
     )
-    trial_notified = 0
     for (user_id,) in cur.fetchall():
         send_message(user_id,
             "⏰ *Пробный период заканчивается завтра*\n\n"
@@ -153,9 +171,8 @@ def handler(event: dict, context) -> dict:
             "Оформи подписку — *199 ₽/месяц* — и продолжай пользоваться без перерыва:\n"
             "/start → 💳 Оформить подписку"
         )
-        trial_notified += 1
 
-    # Уведомление когда пробный ключ только что истёк (только у кого нет активной подписки)
+    # Уведомление когда пробный ключ только что истёк
     cur.execute(
         f"""SELECT DISTINCT uk.user_id FROM {SCHEMA}.user_keys uk
             WHERE uk.expires_at BETWEEN NOW() - INTERVAL '1 hour' AND NOW()
@@ -164,7 +181,6 @@ def handler(event: dict, context) -> dict:
                 WHERE s.user_id = uk.user_id AND s.status = 'active'
             )"""
     )
-    trial_expired = 0
     for (user_id,) in cur.fetchall():
         send_message(user_id,
             "🔒 *Пробный период закончился*\n\n"
@@ -173,9 +189,8 @@ def handler(event: dict, context) -> dict:
             "💳 *199 ₽/месяц* — безлимитный трафик, высокая скорость, автопродление.\n\n"
             "Оформить прямо сейчас → /start"
         )
-        trial_expired += 1
 
-    # Напоминание об оплате каждые 3 дня для отменённых/истёкших подписок без карты
+    # Напоминание об оплате каждые 3 дня для отменённых/истёкших подписок
     cur.execute(
         f"""SELECT DISTINCT s.user_id FROM {SCHEMA}.subscriptions s
             WHERE s.status IN ('cancelled', 'expired')
@@ -189,7 +204,6 @@ def handler(event: dict, context) -> dict:
                 WHERE s2.user_id = s.user_id AND s2.status = 'active'
             )"""
     )
-    sub_reminded = 0
     for (user_id,) in cur.fetchall():
         send_message(user_id,
             "💳 *Подписка не активна*\n\n"
@@ -197,7 +211,6 @@ def handler(event: dict, context) -> dict:
             "Оформи снова за *199 ₽/месяц*:\n"
             "/start → 💳 Оформить подписку"
         )
-        sub_reminded += 1
 
     # Удаление пробных ключей через 5 дней после истечения (если нет активной подписки)
     cur.execute(
@@ -211,15 +224,16 @@ def handler(event: dict, context) -> dict:
     )
     keys_to_delete = cur.fetchall()
     deleted = 0
-    for key_id, user_id, client_id in keys_to_delete:
-        xui_delete_client(client_id)
+    for key_id, user_id, marzban_username in keys_to_delete:
+        err = marzban_delete_user(marzban_username)
+        if err:
+            print(f"[billing] marzban delete error for key {key_id}: {err}")
         cur.execute(f"DELETE FROM {SCHEMA}.user_keys WHERE id = %s", (key_id,))
         send_message(user_id,
             "🗑 *Ваш пробный ключ удалён*\n\n"
             "Прошло 5 дней с окончания пробного периода — ключ был автоматически удалён.\n\n"
-            "Чтобы снова пользоваться RossoVPN, оформите подписку:\n"
-            "💳 *199 ₽/месяц* — безлимитный трафик, высокая скорость.\n\n"
-            "Подключиться → /start"
+            "Оформите подписку чтобы снова получить доступ:\n"
+            "/start → 💳 Оформить подписку"
         )
         deleted += 1
 
@@ -230,5 +244,9 @@ def handler(event: dict, context) -> dict:
     return {
         "statusCode": 200,
         "headers": headers,
-        "body": json.dumps({"ok": True, "charged": charged, "failed": failed, "trial_notified": trial_notified, "trial_expired": trial_expired, "deleted": deleted, "sub_reminded": sub_reminded})
+        "body": json.dumps({
+            "charged": charged,
+            "failed": failed,
+            "deleted": deleted
+        })
     }

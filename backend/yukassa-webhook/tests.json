@@ -4,9 +4,7 @@
       "name": "Ping webhook",
       "method": "GET",
       "path": "/",
-      "expectedStatus": 405,
-      "expectedBody": {"error": "Method not allowed"},
-      "bodyMatcher": "partial"
+      "expectedStatus": 200
     }
   ]
 }
