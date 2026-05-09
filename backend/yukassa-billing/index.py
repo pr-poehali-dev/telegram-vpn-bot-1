@@ -70,7 +70,7 @@ def send_message(chat_id, text):
 def charge_subscription(user_id, subscription_id, payment_method_id):
     idempotency_key = str(uuid.uuid4())
     payload = {
-        "amount": {"value": "199.00", "currency": "RUB"},
+        "amount": {"value": "100.00", "currency": "RUB"},
         "capture": True,
         "payment_method_id": payment_method_id,
         "description": f"Подписка RossoVPN — 30 дней (user {user_id})",
@@ -103,7 +103,7 @@ def handler(event: dict, context) -> dict:
     for (user_id,) in cur.fetchall():
         send_message(user_id,
             "⏰ *Напоминание*\n\n"
-            "Через 3 дня произойдёт автоматическое продление подписки RossoVPN за 199 ₽.\n\n"
+            "Через 3 дня произойдёт автоматическое продление подписки RossoVPN за 100 ₽.\n\n"
             "Отменить можно командой /cancel"
         )
 
@@ -126,7 +126,7 @@ def handler(event: dict, context) -> dict:
 
         cur.execute(
             f"""INSERT INTO {SCHEMA}.payments (user_id, subscription_id, yukassa_payment_id, amount, status, payment_method_id)
-                VALUES (%s, %s, %s, 199.00, %s, %s)""",
+                VALUES (%s, %s, %s, 100.00, %s, %s)""",
             (user_id, sub_id, payment_id, status or "pending", payment_method_id)
         )
 
@@ -168,7 +168,7 @@ def handler(event: dict, context) -> dict:
         send_message(user_id,
             "⏰ *Пробный период заканчивается завтра*\n\n"
             "Твой пробный ключ RossoVPN истекает через 1 день.\n\n"
-            "Оформи подписку — *199 ₽/месяц* — и продолжай пользоваться без перерыва:\n"
+            "Оформи подписку — *100 ₽/месяц* — и продолжай пользоваться без перерыва:\n"
             "/start → 💳 Оформить подписку"
         )
 
@@ -186,7 +186,7 @@ def handler(event: dict, context) -> dict:
             "🔒 *Пробный период закончился*\n\n"
             "Спасибо, что попробовал RossoVPN!\n\n"
             "Чтобы продолжить пользоваться VPN, оформи подписку:\n"
-            "💳 *199 ₽/месяц* — безлимитный трафик, высокая скорость, автопродление.\n\n"
+            "💳 *100 ₽/месяц* — безлимитный трафик, высокая скорость, автопродление.\n\n"
             "Оформить прямо сейчас → /start"
         )
 
@@ -208,7 +208,7 @@ def handler(event: dict, context) -> dict:
         send_message(user_id,
             "💳 *Подписка не активна*\n\n"
             "Твоя подписка RossoVPN истекла — VPN не работает.\n\n"
-            "Оформи снова за *199 ₽/месяц*:\n"
+            "Оформи снова за *100 ₽/месяц*:\n"
             "/start → 💳 Оформить подписку"
         )
 

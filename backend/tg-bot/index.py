@@ -1,6 +1,6 @@
 """
 Telegram VPN бот RossoVPN на базе Marzban.
-1 ключ на пользователя. Триал 7 дней. Подписка 199 руб/мес через ЮКасса.
+1 ключ на пользователя. Триал 7 дней. Подписка 100 руб/мес через ЮКасса.
 """
 
 import os
@@ -353,7 +353,7 @@ def send_main_menu(chat_id, user: dict, user_id: int = None):
 
     sub = get_subscription(user_id) if user_id else None
     if not sub or sub["status"] != "active":
-        rows.append([{"text": "💳 Оформить подписку — 199 ₽/мес", "callback_data": "subscribe"}])
+        rows.append([{"text": "💳 Оформить подписку — 100 ₽/мес", "callback_data": "subscribe"}])
     else:
         rows.append([{"text": "🔕 Отменить подписку", "callback_data": "cancel_sub"}])
 
@@ -553,7 +553,7 @@ def handle_update(update: dict):
                             "🎁 *Пробный ключ активирован на 7 дней!*\n\n"
                             f"🔑 Твой VLESS ключ:\n\n`{vless_link}`\n\n"
                             "Скопируй и вставь в приложение.\n"
-                            "После пробного периода оформи подписку — *199 ₽/месяц*."
+                            "После пробного периода оформи подписку — *100 ₽/месяц*."
                         )
                         user = get_user(user_id)
                         send_main_menu(chat_id, user, user_id)
@@ -613,7 +613,7 @@ def handle_update(update: dict):
             )
             kb_rows = []
             if not sub or sub["status"] != "active":
-                kb_rows.append([{"text": "💳 Оформить подписку — 199 ₽/мес", "callback_data": "subscribe"}])
+                kb_rows.append([{"text": "💳 Оформить подписку — 100 ₽/мес", "callback_data": "subscribe"}])
             kb_rows.append([{"text": "◀️ Назад", "callback_data": "main_menu"}])
             edit_message(chat_id, message_id, text, reply_markup={"inline_keyboard": kb_rows})
 
@@ -637,7 +637,7 @@ def handle_update(update: dict):
             import uuid as _uuid
             idempotency_key = str(_uuid.uuid4())
             payload = {
-                "amount": {"value": "199.00", "currency": "RUB"},
+                "amount": {"value": "100.00", "currency": "RUB"},
                 "confirmation": {"type": "redirect", "return_url": "https://t.me/RossoVPN_bot"},
                 "capture": True,
                 "save_payment_method": True,
@@ -656,12 +656,12 @@ def handle_update(update: dict):
                 pay_url = pay_data.get("confirmation", {}).get("confirmation_url", "")
                 if pay_url:
                     keyboard = {"inline_keyboard": [
-                        [{"text": "💳 Оплатить 199 ₽", "url": pay_url}],
+                        [{"text": "💳 Оплатить 100 ₽", "url": pay_url}],
                         [{"text": "◀️ Отмена", "callback_data": "main_menu"}]
                     ]}
                     edit_message(chat_id, message_id,
                                  "💳 *Оформление подписки*\n\n"
-                                 "Стоимость: *199 ₽/месяц*\n"
+                                 "Стоимость: *100 ₽/месяц*\n"
                                  "Автопродление каждые 30 дней.\n\n"
                                  "Нажми кнопку для оплаты:",
                                  reply_markup=keyboard)
@@ -802,7 +802,7 @@ def setup_bot():
             "🔒 RossoVPN — быстрый и надёжный VPN-сервис.\n\n"
             "✅ Безлимитный трафик\n"
             "✅ Работает на любом устройстве и мобильной связи\n"
-            "✅ 199 ₽/месяц\n\n"
+            "✅ 100 ₽/месяц\n\n"
             "Поддержка: @btb75, @makarevichas"
         )
     }, timeout=10)
